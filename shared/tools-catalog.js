@@ -858,6 +858,44 @@ export const TOOLS = [
     parameters: schema(),
   },
   {
+    name: "ppt_get_textboxes",
+    host: "ppt",
+    executor: "ppt.getTextboxes",
+    description:
+      "读取指定幻灯片上的文本框（含其他带文字的形状，如带文字的图形/占位符）：id、名称、位置与尺寸（磅）、完整文字，以及文字格式详情（字体/字号/加粗/斜体/下划线/颜色/对齐）。调整大小或删除前先用本工具定位。",
+    parameters: schema({ slide_index: num("幻灯片 index（0 起始）") }, ["slide_index"]),
+  },
+  {
+    name: "ppt_adjust_textbox",
+    host: "ppt",
+    executor: "ppt.adjustTextbox",
+    description:
+      "调整幻灯片上文本框的大小与位置：width/height（尺寸）、left/top（位置），单位磅，至少一项，可任意组合（只改位置、只改大小或同时调整）。用 shape_id 或 match_text 定位（建议先用 ppt_get_textboxes 读取）。通用形状请用 ppt_move_shape。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      left: num("新左边距（磅）"),
+      top: num("新上边距（磅）"),
+      width: num("新宽度（磅）"),
+      height: num("新高度（磅）"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_delete_textbox",
+    host: "ppt",
+    executor: "ppt.deleteTextbox",
+    description:
+      "删除幻灯片上的文本框（type=textBox）：用 shape_id / shape_ids 精确删除，或 match_text 匹配包含该文本的文本框（match_all=true 删除全部匹配）。目标不是文本框时会明确报错并引导改用 ppt_delete_shape。破坏性操作，建议先用 ask_user 确认。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("要删除的文本框 id"),
+      shape_ids: arr("要删除的多个文本框 id 列表", num("形状 id")),
+      match_text: str("匹配文本（删除包含该文本的文本框）"),
+      match_all: bool("删除所有匹配的文本框，默认 false（只删第一个）"),
+    }, ["slide_index"]),
+  },
+  {
     name: "attachment_list",
     host: "common",
     side: "server",

@@ -696,6 +696,146 @@ registry["ppt.getSlideLayouts"] = async () => {
   });
 };
 
+/* ---------------- 文本框专用工具（读取含文字格式 / 调整大小 / 删除） ---------------- */
+
+const TEXTBOX_FONT_LOAD =
+  "textFrame/textRange/font/name,textFrame/textRange/font/size,textFrame/textRange/font/bold," +
+  "textFrame/textRange/font/italic,textFrame/textRange/font/underline,textFrame/textRange/font/color," +
+  "textFrame/textRange/paragraphFormat/horizontalAlignment";
+
+function isTextbox(s) {
+  return String(s.type).toLowerCase() === "textbox";
+}
+
+registry["ppt.getTextboxes"] = async (args) => {
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    let withFormat = true;
+    try {
+      shapes.load(TEXTBOX_FONT_LOAD);
+      await ctx.sync();
+    } catch { withFormat = false; /* 旧版 API 无文字格式属性 */ }
+    const boxes = [];
+    for (const s of shapes.items) {
+      const text = s.textFrame?.textRange?.text;
+      if (!isTextbox(s) && !text) continue; // 只列文本框与带文字的形状
+      const entry = { ...shapePos(s), text: text ?? undefined };
+      if (withFormat && s.textFrame?.textRange?.font) {
+        const f = s.textFrame.textRange.font;
+        entry.font = {
+          name: f.name ?? undefined,
+          size: f.size ?? undefined,
+          bold: f.bold ?? undefined,
+          italic: f.italic ?? undefined,
+          underline: f.underline ?? undefined,
+          color: f.color ?? undefined,
+          align: s.textFrame.textRange.paragraphFormat?.horizontalAlignment ?? undefined,
+        };
+      }
+      boxes.push(entry);
+    }
+    return {
+      slideIndex: index,
+      textboxCount: boxes.filter((b) => String(b.type).toLowerCase() === "textbox").length,
+      textboxes: boxes,
+      note: withFormat
+        ? "type=textBox 为文本框；font.color 为 #RRGGBB，混合格式时对应项可能为 null"
+        : "文字格式详情需要 PowerPointApi 1.4+，已省略",
+    };
+  });
+};
+
+registry["ppt.adjustTextbox"] = async (args) => {
+  requireSingleSelector(args);
+  const updates = {};
+  for (const k of ["left", "top", "width", "height"]) {
+    if (args?.[k] != null) {
+      const v = Number(args[k]);
+      if (!Number.isFinite(v) || v < 0) throw new Error(`${k} 必须是非负数字（磅）`);
+      updates[k] = v;
+    }
+  }
+  if (!Object.keys(updates).length) {
+    throw new Error("至少提供 left / top（位置）或 width / height（大小）之一");
+  }
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    const { list } = pickTargets(shapes, args);
+    const target = list[0];
+    for (const [k, v] of Object.entries(updates)) target[k] = v;
+    try {
+      await ctx.sync();
+    } catch (e) {
+      throw new Error(`调整文本框失败（需要 PowerPointApi 1.4+）：${e?.message || e}`);
+    }
+    return {
+      ok: true,
+      slideIndex: index,
+      shapeId: Number(target.id),
+      updated: updates,
+      note: !isTextbox(target)
+        ? `目标 type=${target.type}（非文本框），已按通用形状处理；通用形状建议用 ppt_move_shape`
+        : undefined,
+    };
+  });
+};
+
+registry["ppt.deleteTextbox"] = async (args) => {
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    const boxes = shapes.items.filter(isTextbox);
+    let targets = [];
+    if (args?.shape_id != null || args?.shape_ids != null) {
+      const raw = args.shape_ids != null ? args.shape_ids : [args.shape_id];
+      const ids = (Array.isArray(raw) ? raw : [raw]).map(Number).filter((v) => Number.isFinite(v));
+      if (!ids.length) throw new Error("shape_id / shape_ids 无效");
+      const byId = new Map(shapes.items.map((s) => [Number(s.id), s]));
+      const notFound = ids.filter((id) => !byId.has(id));
+      if (notFound.length) throw new Error(`未找到 id=${notFound.join("、")} 的形状（可先用 ppt_get_textboxes 查看）`);
+      const notBox = ids.filter((id) => !isTextbox(byId.get(id)));
+      if (notBox.length) {
+        throw new Error(`id=${notBox.join("、")} 不是文本框（type=${notBox.map((id) => byId.get(id).type).join("/")}），请改用 ppt_delete_shape`);
+      }
+      targets = ids.map((id) => byId.get(id));
+    } else if (args?.match_text) {
+      const needle = String(args.match_text);
+      targets = boxes.filter((s) => (s.textFrame?.textRange?.text || "").includes(needle));
+      if (!targets.length) {
+        const other = shapes.items.find(
+          (s) => !isTextbox(s) && (s.textFrame?.textRange?.text || "").includes(needle)
+        );
+        if (other) {
+          throw new Error(`文本“${needle}”出现在 type=${other.type} 的形状中（非文本框），请改用 ppt_delete_shape`);
+        }
+        throw new Error(`未找到包含“${needle}”的文本框（可先用 ppt_get_textboxes 查看）`);
+      }
+      if (!args?.match_all) targets = [targets[0]];
+    } else {
+      throw new Error("必须提供 shape_id / shape_ids / match_text 之一");
+    }
+    if (!hasFn(targets[0], "delete")) {
+      throw new Error("当前 PowerPoint JS API 不支持删除形状（需要 PowerPointApi 1.3+）");
+    }
+    const deletedIds = targets.map((t) => Number(t.id));
+    for (const t of targets) t.delete();
+    await ctx.sync();
+    const leftover =
+      args?.match_text && !args?.match_all
+        ? boxes.filter((s) => (s.textFrame?.textRange?.text || "").includes(String(args.match_text))).length - targets.length
+        : 0;
+    return {
+      ok: true,
+      slideIndex: index,
+      deletedShapeIds: deletedIds,
+      deletedCount: deletedIds.length,
+      remainingTextboxes: boxes.length - targets.length,
+      note: leftover > 0
+        ? `本页还有 ${leftover} 个包含“${args.match_text}”的文本框未删除，可再次调用并配合 match_all=true`
+        : undefined,
+    };
+  });
+};
+
 registry["ppt.getSlideNotes"] = async (args) => {
   return PowerPoint.run(async (ctx) => {
     const { index } = await getSlideShapes(ctx, args?.slide_index);
