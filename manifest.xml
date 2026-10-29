@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+  xsi:type="TaskPaneApp">
+
+  <!-- 唯一 ID：如重新生成请保持不变，否则 Office 会视为新加载项 -->
+  <Id>a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>office-plugin-ai</ProviderName>
+  <DefaultLocale>zh-CN</DefaultLocale>
+  <DisplayName DefaultValue="AI 助手"/>
+  <Description DefaultValue="AI Agent 办公助手：通过自然语言调用工具，直接操作当前打开的 Word / Excel / PowerPoint 文档。"/>
+  <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-80.png"/>
+  <SupportUrl DefaultValue="https://localhost:3000"/>
+
+  <AppDomains>
+    <AppDomain>https://localhost:3000</AppDomain>
+  </AppDomains>
+
+  <!-- 同时支持 Word / Excel / PowerPoint -->
+  <Hosts>
+    <Host Name="Document"/>
+    <Host Name="Workbook"/>
+    <Host Name="Presentation"/>
+  </Hosts>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html"/>
+  </DefaultSettings>
+
+  <!-- 读写文档权限（工具需要写入内容） -->
+  <Permissions>ReadWriteDocument</Permissions>
+
+  <!-- 功能区按钮：让“AI 助手”在每个文档的【开始】选项卡常驻可见，
+       打开自己的文档后点击该按钮即可打开面板（任务窗格不会跨文档自动跟随） -->
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <!-- ===================== Word ===================== -->
+      <Host xsi:type="Document">
+        <DesktopFormFactor>
+          <FunctionFile resid="Commands.Url"/>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="OfficeAI.Group.Word">
+                <Label resid="OfficeAI.GroupLabel"/>
+                <Icon>
+                  <bt:Image size="16" resid="OfficeAI.Icon.16"/>
+                  <bt:Image size="32" resid="OfficeAI.Icon.32"/>
+                  <bt:Image size="80" resid="OfficeAI.Icon.80"/>
+                </Icon>
+                <Control xsi:type="Button" id="OfficeAI.Button.Word">
+                  <Label resid="OfficeAI.ButtonLabel"/>
+                  <Supertip>
+                    <Title resid="OfficeAI.ButtonLabel"/>
+                    <Description resid="OfficeAI.ButtonTooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="OfficeAI.Icon.16"/>
+                    <bt:Image size="32" resid="OfficeAI.Icon.32"/>
+                    <bt:Image size="80" resid="OfficeAI.Icon.80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>OfficeAI.Taskpane</TaskpaneId>
+                    <SourceLocation resid="OfficeAI.TaskpaneUrl"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+      <!-- ===================== Excel ===================== -->
+      <Host xsi:type="Workbook">
+        <DesktopFormFactor>
+          <FunctionFile resid="Commands.Url"/>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="OfficeAI.Group.Excel">
+                <Label resid="OfficeAI.GroupLabel"/>
+                <Icon>
+                  <bt:Image size="16" resid="OfficeAI.Icon.16"/>
+                  <bt:Image size="32" resid="OfficeAI.Icon.32"/>
+                  <bt:Image size="80" resid="OfficeAI.Icon.80"/>
+                </Icon>
+                <Control xsi:type="Button" id="OfficeAI.Button.Excel">
+                  <Label resid="OfficeAI.ButtonLabel"/>
+                  <Supertip>
+                    <Title resid="OfficeAI.ButtonLabel"/>
+                    <Description resid="OfficeAI.ButtonTooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="OfficeAI.Icon.16"/>
+                    <bt:Image size="32" resid="OfficeAI.Icon.32"/>
+                    <bt:Image size="80" resid="OfficeAI.Icon.80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>OfficeAI.Taskpane</TaskpaneId>
+                    <SourceLocation resid="OfficeAI.TaskpaneUrl"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+      <!-- ===================== PowerPoint ===================== -->
+      <Host xsi:type="Presentation">
+        <DesktopFormFactor>
+          <FunctionFile resid="Commands.Url"/>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="OfficeAI.Group.Ppt">
+                <Label resid="OfficeAI.GroupLabel"/>
+                <Icon>
+                  <bt:Image size="16" resid="OfficeAI.Icon.16"/>
+                  <bt:Image size="32" resid="OfficeAI.Icon.32"/>
+                  <bt:Image size="80" resid="OfficeAI.Icon.80"/>
+                </Icon>
+                <Control xsi:type="Button" id="OfficeAI.Button.Ppt">
+                  <Label resid="OfficeAI.ButtonLabel"/>
+                  <Supertip>
+                    <Title resid="OfficeAI.ButtonLabel"/>
+                    <Description resid="OfficeAI.ButtonTooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="OfficeAI.Icon.16"/>
+                    <bt:Image size="32" resid="OfficeAI.Icon.32"/>
+                    <bt:Image size="80" resid="OfficeAI.Icon.80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>OfficeAI.Taskpane</TaskpaneId>
+                    <SourceLocation resid="OfficeAI.TaskpaneUrl"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="OfficeAI.Icon.16" DefaultValue="https://localhost:3000/assets/icon-16.png"/>
+        <bt:Image id="OfficeAI.Icon.32" DefaultValue="https://localhost:3000/assets/icon-32.png"/>
+        <bt:Image id="OfficeAI.Icon.80" DefaultValue="https://localhost:3000/assets/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="OfficeAI.TaskpaneUrl" DefaultValue="https://localhost:3000/taskpane.html"/>
+        <bt:Url id="Commands.Url" DefaultValue="https://localhost:3000/commands.html"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="OfficeAI.GroupLabel" DefaultValue="AI 助手"/>
+        <bt:String id="OfficeAI.ButtonLabel" DefaultValue="AI 助手"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="OfficeAI.ButtonTooltip" DefaultValue="打开 AI 助手面板，用自然语言操作当前文档"/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

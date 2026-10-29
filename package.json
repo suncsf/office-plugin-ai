@@ -1,0 +1,52 @@
+{
+  "name": "office-plugin-ai",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "author": "suncsf <https://github.com/suncsf>",
+  "homepage": "https://github.com/suncsf",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/suncsf"
+  },
+  "description": "Office 2024 加载项：AI Agent 面板（LangGraph + Vue3 + Element Plus），将 Word/Excel/PPT 能力作为工具开放给 AI",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "icons": "node scripts/gen-icons.mjs",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "dev": "vite",
+    "setup": "office-addin-dev-certs install",
+    "dev-server": "node server/index.js",
+    "sideload": "node scripts/sideload.mjs register && office-addin-debugging start manifest.xml",
+    "sideload:stop": "office-addin-debugging stop manifest.xml",
+    "register": "node scripts/sideload.mjs register",
+    "unregister": "node scripts/sideload.mjs unregister",
+    "sideload:status": "node scripts/sideload.mjs status",
+    "validate": "office-addin-manifest validate manifest.xml",
+    "package": "node scripts/package.mjs",
+    "installer": "node scripts/package.mjs && \"%LOCALAPPDATA%\\Programs\\Inno Setup 6\\ISCC.exe\" installer\\setup.iss",
+    "test": "node test/run-agent-test.mjs && node test/word-map-test.mjs && node test/thinking-persist-test.mjs && node test/attachment-test.mjs"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "@langchain/core": "^0.3.60",
+    "@langchain/langgraph": "^0.4.9",
+    "@langchain/openai": "^0.6.10",
+    "better-sqlite3": "^12.2.0",
+    "element-plus": "^2.9.11",
+    "express": "^4.21.2",
+    "fflate": "^0.8.3",
+    "markdown-it": "^14.1.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "office-addin-debugging": "^7.0.1",
+    "office-addin-dev-certs": "^3.0.1",
+    "office-addin-manifest": "^3.0.1",
+    "vite": "^6.3.5"
+  }
+}
