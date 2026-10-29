@@ -60,6 +60,10 @@ function parseRunProps(rPr) {
   if (fontsTag) {
     const ascii = attr(fontsTag, "ascii") || attr(fontsTag, "hAnsi") || attr(fontsTag, "eastAsia");
     if (ascii) font.name = ascii;
+    // 主题字体（真实 Word 文档常用）：asciiTheme/eastAsiaTheme 指向 theme1.xml，由解析器随后解析
+    const asciiTheme = attr(fontsTag, "asciiTheme") || attr(fontsTag, "hAnsiTheme");
+    const eastAsiaTheme = attr(fontsTag, "eastAsiaTheme");
+    if (!ascii && (asciiTheme || eastAsiaTheme)) font.themeName = { asciiTheme, eastAsiaTheme };
   }
   const sz = rPr.match(/<(?:[\w]+:)?sz\b[^>]*val="(\d+)"/)?.[1];
   if (sz) font.sizePt = Number(sz) / 2;
@@ -79,107 +83,217 @@ function parseRunProps(rPr) {
   return Object.keys(font).length ? font : {};
 }
 
+const mergeDefined = (base, over) => {
+  const out = { ...base };
+  for (const k of Object.keys(over || {})) if (over[k] !== undefined) out[k] = over[k];
+  return out;
+};
+
+/** 解析段落属性原始 XML（pPr）→ 结构化（直接格式与样式定义共用） */
+function parseParaProps(pPrRaw) {
+  if (!pPrRaw) return {};
+  const out = {};
+  const jcTag = pPrRaw.match(/<(?:[\w]+:)?jc\b[^>]*>/)?.[0];
+  if (jcTag) out.align = ALIGN_MAP[attr(jcTag, "val")];
+  const ol = pPrRaw.match(/<(?:[\w]+:)?outlineLvl\b[^>]*val="(\d+)"/)?.[1];
+  if (ol != null) out.outlineLevel = Number(ol);
+  const spacingTag = pPrRaw.match(/<(?:[\w]+:)?spacing\b[^>]*>/)?.[0];
+  if (spacingTag) {
+    const before = attr(spacingTag, "before");
+    const after = attr(spacingTag, "after");
+    const line = attr(spacingTag, "line");
+    const lineRule = attr(spacingTag, "lineRule") || "auto";
+    const spacing = {};
+    if (before != null) spacing.beforePt = Number(before) / 20;
+    if (after != null) spacing.afterPt = Number(after) / 20;
+    if (line != null) {
+      spacing.lineSpacing = lineRule === "auto" ? `${(Number(line) / 240).toFixed(2)} 倍行距` : `${Number(line) / 20} 磅`;
+    }
+    if (Object.keys(spacing).length) out.spacing = spacing;
+  }
+  const indTag = pPrRaw.match(/<(?:[\w]+:)?ind\b[^>]*>/)?.[0];
+  if (indTag) {
+    const firstLine = attr(indTag, "firstLine");
+    const left = attr(indTag, "left");
+    const hanging = attr(indTag, "hanging");
+    const indent = {};
+    if (firstLine != null) indent.firstLinePt = Number(firstLine) / 20;
+    if (left != null) indent.leftPt = Number(left) / 20;
+    if (hanging != null) indent.hangingPt = Number(hanging) / 20;
+    if (Object.keys(indent).length) out.indent = indent;
+  }
+  return out;
+}
+
 function parseDocx(buf) {
   const zip = openZip(buf);
   const docXml = zip["word/document.xml"] ? strFromU8(zip["word/document.xml"]) : "";
-  if (!docXml) throw new Error("文档缺少 word/document.xml，无法解析");
+  if (!docXml) {
+    throw new Error("文档缺少 word/document.xml，无法解析（文件内条目: " + Object.keys(zip).slice(0, 6).join(", ") + "）");
+  }
   const stylesXml = zip["word/styles.xml"] ? strFromU8(zip["word/styles.xml"]) : "";
 
-  // 样式表：styleId → 显示名
-  const styleNames = new Map();
+  // 主题字体（theme1.xml）：真实文档的 rFonts 常用 asciiTheme/eastAsiaTheme 引用
+  const themeFonts = {};
+  {
+    const themeXml = zip["word/theme/theme1.xml"] ? strFromU8(zip["word/theme/theme1.xml"]) : "";
+    if (themeXml) {
+      const major = themeXml.match(/<a:majorFont>[\s\S]*?<\/a:majorFont>/)?.[0] || "";
+      const minor = themeXml.match(/<a:minorFont>[\s\S]*?<\/a:minorFont>/)?.[0] || "";
+      themeFonts.majorLatin = major.match(/<a:latin typeface="([^"]*)"/)?.[1];
+      themeFonts.majorEa = major.match(/<a:ea typeface="([^"]*)"/)?.[1];
+      themeFonts.minorLatin = minor.match(/<a:latin typeface="([^"]*)"/)?.[1];
+      themeFonts.minorEa = minor.match(/<a:ea typeface="([^"]*)"/)?.[1];
+    }
+  }
+  const resolveThemeFont = (font) => {
+    if (!font || !font.themeName) return font;
+    const t = font.themeName;
+    const pick = (v) => (v && !v.startsWith("+") ? v : undefined);
+    const latin = t.asciiTheme ? pick(t.asciiTheme.includes("major") ? themeFonts.majorLatin : themeFonts.minorLatin) : undefined;
+    const ea = t.eastAsiaTheme ? pick(t.eastAsiaTheme.includes("major") ? themeFonts.majorEa : themeFonts.minorEa) : undefined;
+    const name = ea || latin;
+    if (name) font.name = name;
+    delete font.themeName;
+    return font;
+  };
+
+  // 文档默认（docDefaults）：所有样式的最底层
+  let defaultFont = {};
+  let defaultPara = {};
+  {
+    const rPrDefault = stylesXml.match(/<(?:[\w]+:)?rPrDefault\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?rPrDefault>/)?.[1];
+    if (rPrDefault) defaultFont = resolveThemeFont(parseRunProps(rPrDefault));
+    const pPrDefault = stylesXml.match(/<(?:[\w]+:)?pPrDefault\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?pPrDefault>/)?.[1];
+    if (pPrDefault) defaultPara = parseParaProps(pPrDefault);
+  }
+
+  // 样式表：id → { type, name, basedOn, pPrRaw, rPrRaw }
+  const styles = new Map();
   const styleRe = /<(?:[\w]+:)?style\b([^>]*)>([\s\S]*?)<\/(?:[\w]+:)?style>/g;
   let m;
   while ((m = styleRe.exec(stylesXml))) {
-    if (/type="paragraph"/.test(m[1])) {
-      const id = attr(m[1], "styleId");
-      const name = m[2].match(/(?:[\w]+:)?name\b[^>]*val="([^"]*)"/)?.[1];
-      if (id) styleNames.set(id, name || id);
+    const tag = m[1];
+    const styleBody = m[2];
+    const id = attr(tag, "styleId");
+    if (!id) continue;
+    const basedOnTag = styleBody.match(/<(?:[\w]+:)?basedOn\b[^>]*>/)?.[0];
+    styles.set(id, {
+      type: /type="(\w+)"/.exec(tag)?.[1] || "paragraph",
+      name: styleBody.match(/<(?:[\w]+:)?name\b[^>]*val="([^"]*)"/)?.[1] || id,
+      basedOn: basedOnTag ? attr(basedOnTag, "val") : undefined,
+      pPrRaw: styleBody.match(/<(?:[\w]+:)?pPr\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?pPr>/)?.[1] || "",
+      rPrRaw: styleBody.match(/<(?:[\w]+:)?rPr\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?rPr>/)?.[1] || "",
+    });
+  }
+
+  /**
+   * 样式有效格式：docDefaults → basedOn 链（基类先应用、派生覆盖）。
+   * 真实 Word 文档的格式主要定义在样式里，段落往往只有 pStyle 引用。
+   */
+  const styleChain = (styleId) => {
+    let font = { ...defaultFont };
+    let para = { ...defaultPara };
+    const seen = new Set();
+    const chain = [];
+    let cur = styleId ? styles.get(styleId) : null;
+    while (cur && cur.type === "paragraph" && !seen.has(cur)) {
+      seen.add(cur);
+      chain.push(cur);
+      cur = cur.basedOn ? styles.get(cur.basedOn) : null;
     }
-  }
-  // 文档默认字体
-  let defaultFont = null;
-  {
-    const d = stylesXml.match(/<(?:[\w]+:)?rPrDefault\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?rPrDefault>/)?.[1];
-    if (d) defaultFont = parseRunProps(d) || null;
-  }
+    for (const s of chain.reverse()) {
+      font = mergeDefined(font, parseRunProps(s.rPrRaw));
+      para = mergeDefined(para, parseParaProps(s.pPrRaw));
+    }
+    return { font, para };
+  };
 
   const body = docXml.match(/<(?:[\w]+:)?body\b[^>]*>([\s\S]*)<\/(?:[\w]+:)?body>/)?.[1] || docXml;
   const blockRe = /<(?:[\w]+:)?tbl\b[\s\S]*?<\/(?:[\w]+:)?tbl>|<(?:[\w]+:)?p\b[^>]*\/>|<(?:[\w]+:)?p\b[^>]*>[\s\S]*?<\/(?:[\w]+:)?p>/g;
 
   const paragraphs = [];
   const tables = [];
+  let skipped = 0;
   while ((m = blockRe.exec(body))) {
     const block = m[0];
-    if (block.startsWith("<") && /<(?:[\w]+:)?tbl\b/.test(block.slice(0, 30))) {
-      const rows = [];
-      const trRe = /<(?:[\w]+:)?tr\b[^>]*>[\s\S]*?<\/(?:[\w]+:)?tr>/g;
-      let tr;
-      while ((tr = trRe.exec(block))) {
-        const cells = [];
-        const tcRe = /<(?:[\w]+:)?tc\b[^>]*>[\s\S]*?<\/(?:[\w]+:)?tc>/g;
-        let tc;
-        while ((tc = tcRe.exec(tr[0]))) cells.push(docxText(tc[0]).trim());
-        rows.push(cells);
+    try {
+      if (block.startsWith("<") && /<(?:[\w]+:)?tbl\b/.test(block.slice(0, 30))) {
+        const rows = [];
+        const trRe = /<(?:[\w]+:)?tr\b[^>]*>[\s\S]*?<\/(?:[\w]+:)?tr>/g;
+        let tr;
+        while ((tr = trRe.exec(block))) {
+          const cells = [];
+          const tcRe = /<(?:[\w]+:)?tc\b[^>]*>[\s\S]*?<\/(?:[\w]+:)?tc>/g;
+          let tc;
+          while ((tc = tcRe.exec(tr[0]))) cells.push(docxText(tc[0]).trim());
+          rows.push(cells);
+        }
+        tables.push({ anchorParagraph: paragraphs.length, rows });
+        continue;
       }
-      tables.push({ anchorParagraph: paragraphs.length, rows });
-      continue;
-    }
-    // 段落
-    const text = docxText(block);
-    const pPr = block.match(/<(?:[\w]+:)?pPr\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?pPr>/)?.[1] || "";
-    const styleId = pPr.match(/<(?:[\w]+:)?pStyle\b[^>]*>/)?.[0];
-    const style = styleId ? styleNames.get(attr(styleId, "val")) || attr(styleId, "val") : undefined;
-    const jcTag = pPr.match(/<(?:[\w]+:)?jc\b[^>]*>/)?.[0];
-    const align = jcTag ? ALIGN_MAP[attr(jcTag, "val")] : undefined;
-    const ol = pPr.match(/<(?:[\w]+:)?outlineLvl\b[^>]*val="(\d+)"/)?.[1];
+      // 段落
+      const text = docxText(block);
+      const pPr = block.match(/<(?:[\w]+:)?pPr\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?pPr>/)?.[1] || "";
+      const pStyleTag = pPr.match(/<(?:[\w]+:)?pStyle\b[^>]*>/)?.[0];
+      const styleId = pStyleTag ? attr(pStyleTag, "val") : undefined;
+      const styleName = styleId ? styles.get(styleId)?.name || styleId : undefined;
+      const chain = styleChain(styleId);
+      const direct = parseParaProps(pPr);
 
-    const spacingTag = pPr.match(/<(?:[\w]+:)?spacing\b[^>]*>/)?.[0];
-    let spacing;
-    if (spacingTag) {
-      const before = attr(spacingTag, "before");
-      const after = attr(spacingTag, "after");
-      const line = attr(spacingTag, "line");
-      const lineRule = attr(spacingTag, "lineRule") || "auto";
-      spacing = {};
-      if (before != null) spacing.beforePt = Number(before) / 20;
-      if (after != null) spacing.afterPt = Number(after) / 20;
-      if (line != null) spacing.lineSpacing = lineRule === "auto" ? `${(Number(line) / 240).toFixed(2)} 倍行距` : `${Number(line) / 20} 磅`;
-      if (!Object.keys(spacing).length) spacing = undefined;
+      // 字体优先级：run 直接格式（叠加字符样式）> 段落标记 > 样式链
+      let font = null;
+      const runRe = /<(?:[\w]+:)?r\b[^>]*>[\s\S]*?<\/(?:[\w]+:)?r>/g;
+      let run;
+      while ((run = runRe.exec(block))) {
+        if (!docxText(run[0]).trim()) continue;
+        const rPrRaw = run[0].match(/<(?:[\w]+:)?rPr\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?rPr>/)?.[1] || "";
+        const rStyleTag = rPrRaw.match(/<(?:[\w]+:)?rStyle\b[^>]*>/)?.[0];
+        const rStyleId = rStyleTag ? attr(rStyleTag, "val") : undefined;
+        let f = chain.font;
+        if (rStyleId) {
+          const cs = styles.get(rStyleId);
+          if (cs && cs.type === "character") f = mergeDefined(f, parseRunProps(cs.rPrRaw));
+        }
+        f = mergeDefined(f, parseRunProps(rPrRaw));
+        font = f;
+        break;
+      }
+      if (!font) {
+        const markRPr = pPr.match(/<(?:[\w]+:)?rPr\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?rPr>/)?.[1];
+        font = markRPr ? mergeDefined(chain.font, parseRunProps(markRPr)) : chain.font;
+      }
+      font = resolveThemeFont(font);
+
+      const p = { index: paragraphs.length, style: styleName, text };
+      const effAlign = direct.align ?? chain.para.align;
+      if (effAlign) p.align = effAlign;
+      const effOutline = direct.outlineLevel ?? chain.para.outlineLevel;
+      if (effOutline != null) p.outlineLevel = effOutline;
+      if (font && Object.keys(font).length) p.font = font;
+      const effSpacing = direct.spacing ?? chain.para.spacing;
+      if (effSpacing) p.spacing = effSpacing;
+      const effIndent = direct.indent ?? chain.para.indent;
+      if (effIndent) p.indent = effIndent;
+      paragraphs.push(p);
+    } catch (e) {
+      // 单块解析失败不拖垮整体：内容仍尽力保留
+      skipped++;
+      try {
+        paragraphs.push({ index: paragraphs.length, text: docxText(block) });
+      } catch { /* 忽略 */ }
     }
-    const indTag = pPr.match(/<(?:[\w]+:)?ind\b[^>]*>/)?.[0];
-    let indent;
-    if (indTag) {
-      const firstLine = attr(indTag, "firstLine");
-      const left = attr(indTag, "left");
-      const hanging = attr(indTag, "hanging");
-      indent = {};
-      if (firstLine != null) indent.firstLinePt = Number(firstLine) / 20;
-      if (left != null) indent.leftPt = Number(left) / 20;
-      if (hanging != null) indent.hangingPt = Number(hanging) / 20;
-      if (!Object.keys(indent).length) indent = undefined;
-    }
-    // 字体：取第一个有文字的 run 的 rPr，其次段落标记 rPr
-    let font = null;
-    const runRe = /<(?:[\w]+:)?r\b[^>]*>[\s\S]*?<\/(?:[\w]+:)?r>/g;
-    let run;
-    while ((run = runRe.exec(block))) {
-      if (!docxText(run[0]).trim()) continue;
-      font = parseRunProps(run[0].match(/<(?:[\w]+:)?rPr\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?rPr>/)?.[1]);
-      break;
-    }
-    if (!font || !Object.keys(font).length) {
-      const markRPr = pPr.match(/<(?:[\w]+:)?rPr\b[^>]*>([\s\S]*?)<\/(?:[\w]+:)?rPr>/)?.[1];
-      font = parseRunProps(markRPr) || null;
-    }
-    const p = { index: paragraphs.length, style, text };
-    if (align) p.align = align;
-    if (ol != null) p.outlineLevel = Number(ol);
-    if (font && Object.keys(font).length) p.font = font;
-    if (spacing) p.spacing = spacing;
-    if (indent) p.indent = indent;
-    paragraphs.push(p);
   }
-  return { type: "docx", kind: "Word 文档", paragraphCount: paragraphs.length, paragraphs, tables, defaultFont: defaultFont && Object.keys(defaultFont).length ? defaultFont : null };
+  const result = {
+    type: "docx",
+    kind: "Word 文档",
+    paragraphCount: paragraphs.length,
+    paragraphs,
+    tables,
+    defaultFont: Object.keys(defaultFont).length ? defaultFont : null,
+  };
+  if (skipped) result.parseWarnings = `${skipped} 个块解析异常已跳过（内容尽力保留）`;
+  return result;
 }
 
 /* ---------------- xlsx ---------------- */

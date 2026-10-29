@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { parseDocument, attachmentRead, attachmentOverview } from "../server/docparse.js";
 
-const buf = readFileSync("test/fixtures-real.docx");
+const buf = readFileSync("test/fixtures/real-word.docx");
 try {
   const p = parseDocument("fixtures-real.docx", buf);
   console.log("类型:", p.type, "| 段落数:", p.paragraphCount, "| 表格数:", p.tables.length);
