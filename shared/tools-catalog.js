@@ -333,6 +333,28 @@ export const TOOLS = [
       paragraph_format: str("（可选）段落格式 JSON：{alignment, lineSpacing, spaceBefore, spaceAfter, leftIndent, rightIndent, firstLineIndent}（单位磅）"),
     }, ["name"]),
   },
+  {
+    name: "word_run_code",
+    host: "word",
+    executor: "word.runCode",
+    description:
+      "【高级·完整 Word API 兜底】执行任意 Word JavaScript API（Office.js 对象模型）代码，开放全部 Word 能力，" +
+      "覆盖内置 word_* 工具未提供的场景：页眉页脚/节与页面设置/脚注尾注/批注/目录/域/书签/内容控件/表格高级操作/文档属性/列表定义等。" +
+      "code 为 JavaScript 源码，在 Word.run 回调内执行：作用域已注入 Word 与 context（context.document 即当前文档），可直接 await。" +
+      "约定：① 读取属性前必须 load() 再 await context.sync()（如 context.document.body.load('text')），" +
+      "② 最后 return 一个 JSON 可序列化的普通对象（load 过的代理对象会自动展开，但不要返回未 load 的代理），" +
+      "③ 写入操作直接给属性赋值后 await context.sync()。" +
+      "示例（读主页眉）：const s=context.document.sections; s.load('items'); await context.sync(); " +
+      "const h=s.items[0].headers.getItem('Primary'); h.body.load('text'); await context.sync(); return {text:h.body.text};" +
+      "注意：优先使用内置 word_* 工具，仅当无法满足时才用本工具；较新 API 需要 WordApi 1.4+（Office 2024/新版 365 支持），失败会返回错误码与出错位置。",
+    parameters: schema(
+      {
+        code: str("在 Word.run 回调内执行的 JavaScript 源码（可用变量：Word、context，支持 await/return）"),
+        timeout_ms: num("（可选）执行超时毫秒数，默认 30000，范围 1000–120000"),
+      },
+      ["code"]
+    ),
+  },
 
   /* ============================ Excel ============================ */
   {
@@ -552,6 +574,29 @@ export const TOOLS = [
       sheet: str("工作表名"),
     }, ["data_address"]),
   },
+  {
+    name: "excel_run_code",
+    host: "excel",
+    executor: "excel.runCode",
+    description:
+      "【高级·完整 Excel API 兜底】执行任意 Excel JavaScript API（Office.js 对象模型）代码，开放全部 Excel 能力，" +
+      "覆盖内置 excel_* 工具未提供的场景：冻结窗格/工作表与工作簿保护/条件格式/数据验证/命名区域/批注/自动筛选/" +
+      "分组与大纲/透视表/形状与图片/切片器/超链接/工作簿属性/跨表批量操作/自定义 XML 等内置工具未覆盖的能力。" +
+      "code 为 JavaScript 源码，在 Excel.run 回调内执行：作用域已注入 Excel 与 context（context.workbook 即当前工作簿），可直接 await。" +
+      "约定：① 读取属性前必须 load() 再 await context.sync()（如 context.workbook.getSelectedRange().load('address,values')），" +
+      "② 最后 return 一个 JSON 可序列化的普通对象（load 过的代理对象会自动展开，但不要返回未 load 的代理），" +
+      "③ 写入操作直接给属性赋值后 await context.sync()。" +
+      "示例（冻结前两行）：context.workbook.worksheets.getActiveWorksheet().freezePanes.freezeAt('A3'); await context.sync(); return {ok:true};" +
+      "示例（读活动单元格）：const r=context.workbook.getActiveCell(); r.load('address,values'); await context.sync(); return {address:r.address, value:r.values[0][0]};" +
+      "注意：优先使用内置 excel_* 工具，仅当无法满足时才用本工具；较新 API 需要 ExcelApi 1.4+（Office 2024/新版 365 支持），失败会返回错误码与出错位置。",
+    parameters: schema(
+      {
+        code: str("在 Excel.run 回调内执行的 JavaScript 源码（可用变量：Excel、context，支持 await/return）"),
+        timeout_ms: num("（可选）执行超时毫秒数，默认 30000，范围 1000–120000"),
+      },
+      ["code"]
+    ),
+  },
 
   /* ============================ PowerPoint ============================ */
   {
@@ -587,7 +632,7 @@ export const TOOLS = [
     host: "ppt",
     executor: "ppt.addSlide",
     description:
-      "新建幻灯片。layout_index 为版式序号（0 起始，可先用本工具返回的 layouts 查看，缺省使用默认版式）；title_text 传入时会在页面顶部添加标题文本框。",
+      "新建幻灯片。layout_index 为版式序号（0 起始，可先用 ppt_get_slide_layouts 查看，缺省使用默认版式）；title_text 传入时会在页面顶部添加标题文本框。",
     parameters: schema({
       layout_index: num("版式序号（0 起始）"),
       title_text: str("标题文字"),
@@ -614,7 +659,7 @@ export const TOOLS = [
     description:
       "在幻灯片上插入文本框。坐标与尺寸单位为磅（默认页面 960x540）。可设置 font_size/bold/color/align(Left/Center/Right)。",
     parameters: schema({
-      slide_index: num("幻灯片 index，默认当前最后追加页？实际默认为第 0 页，建议显式传入"),
+      slide_index: num("幻灯片 index（0 起始），必填（可先用 ppt_list_slides 查看）"),
       text: str("文本内容（\\n 换行）"),
       left: num("左边距（磅），默认 60"),
       top: num("上边距（磅），默认 60"),
@@ -674,6 +719,143 @@ export const TOOLS = [
     executor: "ppt.setSlideNotes",
     description: "设置指定幻灯片的演讲者备注。",
     parameters: schema({ slide_index: num("幻灯片 index（0 起始）"), notes: str("备注内容") }, ["slide_index", "notes"]),
+  },
+  {
+    name: "ppt_get_slide_notes",
+    host: "ppt",
+    executor: "ppt.getSlideNotes",
+    description: "读取指定幻灯片的演讲者备注。",
+    parameters: schema({ slide_index: num("幻灯片 index（0 起始）") }, ["slide_index"]),
+  },
+  {
+    name: "ppt_list_shapes",
+    host: "ppt",
+    executor: "ppt.listShapes",
+    description:
+      "列出指定幻灯片上的所有形状：id、名称、类型（textBox/geometricShape/picture/table/group/line 等）、位置与尺寸（磅）、层级顺序（zOrder）、文本内容。对形状做删除/移动/改格式前，先用本工具定位目标。",
+    parameters: schema({ slide_index: num("幻灯片 index（0 起始）") }, ["slide_index"]),
+  },
+  {
+    name: "ppt_delete_shape",
+    host: "ppt",
+    executor: "ppt.deleteShape",
+    description:
+      "删除幻灯片上的形状（文本框/图片/表格/几何形状/组合均可）。用 shape_id 精确删除，或用 shape_ids 一次删多个；也可用 match_text 匹配包含该文本的形状（默认只删第一个，match_all=true 删除全部匹配）。组合形状会连同其中所有子形状一起删除。破坏性操作，建议先用 ask_user 确认。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("要删除的形状 id"),
+      shape_ids: arr("要删除的多个形状 id 列表", num("形状 id")),
+      match_text: str("匹配文本（删除包含该文本的形状）"),
+      match_all: bool("删除所有匹配 match_text 的形状，默认 false（只删第一个）"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_move_shape",
+    host: "ppt",
+    executor: "ppt.moveShape",
+    description:
+      "移动/缩放幻灯片上的形状：设置 left/top（位置）与 width/height（尺寸），单位磅，仅传入需要修改的项。常见页面尺寸 960×540 磅（16:9）。用 shape_id 或 match_text 定位。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      left: num("新左边距（磅）"),
+      top: num("新上边距（磅）"),
+      width: num("新宽度（磅）"),
+      height: num("新高度（磅）"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_format_shape",
+    host: "ppt",
+    executor: "ppt.formatShape",
+    description:
+      "设置形状外观：填充色、边框（线条）颜色与粗细、重命名。颜色用 #RRGGBB 或英文色名；fill_clear=true 清除填充变透明；设置边框颜色/粗细时会自动显示边框。用 shape_id 或 match_text 定位。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      fill_color: str("填充颜色"),
+      fill_clear: bool("清除填充（变透明）"),
+      line_color: str("边框/线条颜色"),
+      line_weight: num("边框粗细（磅）"),
+      name: str("重命名形状"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_format_text",
+    host: "ppt",
+    executor: "ppt.formatText",
+    description:
+      "设置形状内文字的格式（作用于该形状全部文本）：字体名称、字号（磅）、加粗、斜体、下划线、颜色、水平对齐。仅传入需要修改的项。用 shape_id 或 match_text 定位形状。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      font_name: str("字体名称"),
+      font_size: num("字号（磅）"),
+      bold: bool("加粗"),
+      italic: bool("斜体"),
+      underline: str("下划线", ["None", "Single", "Double", "Dotted", "Heavy"]),
+      color: str("文字颜色 #RRGGBB"),
+      align: str("水平对齐", ["Left", "Center", "Right", "Justify"]),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_add_shape",
+    host: "ppt",
+    executor: "ppt.addShape",
+    description:
+      "在幻灯片上插入几何形状或线条。kind: geometric=几何形状（默认，geometry 取 PowerPoint GeometricShapeType 值，常用 rectangle/roundedRectangle/ellipse/triangle/rightArrow/leftArrow/upArrow/downArrow/diamond/pentagon/hexagon/star5Points/heart/cloud/lightningBolt）；line=线条（connector: straight/elbow/curve，left/top 为起点，left+width/top+height 为终点）。可同时设置填充/线条颜色、名称与形状内文字。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      kind: str("形状种类", ["geometric", "line"]),
+      geometry: str("几何形状类型（GeometricShapeType 值，默认 rectangle）"),
+      connector: str("线条类型", ["straight", "elbow", "curve"]),
+      left: num("左边距（磅），默认 60"),
+      top: num("上边距（磅），默认 60"),
+      width: num("宽度（磅），默认 200"),
+      height: num("高度（磅），默认 100"),
+      fill_color: str("填充颜色（线条无效，请用 line_color）"),
+      line_color: str("边框/线条颜色"),
+      line_weight: num("边框粗细（磅）"),
+      name: str("形状名称"),
+      text: str("形状内文字"),
+      font_size: num("文字字号（磅）"),
+      font_color: str("文字颜色 #RRGGBB"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_set_shape_zorder",
+    host: "ppt",
+    executor: "ppt.setShapeZorder",
+    description:
+      "调整形状的层级顺序（前后遮挡关系）：BringToFront=置顶，SendToBack=置底，BringForward=上移一层，SendBackward=下移一层。用 shape_id 或 match_text 定位。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      position: str("层级操作", ["BringToFront", "SendToBack", "BringForward", "SendBackward"]),
+    }, ["slide_index", "position"]),
+  },
+  {
+    name: "ppt_ungroup_shape",
+    host: "ppt",
+    executor: "ppt.ungroupShape",
+    description:
+      "解散指定组合形状（type=group），其子形状变为独立形状。若要删除/修改组合内的单个元素，先解组再用 ppt_list_shapes 定位。用 shape_id 或 match_text 定位。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_get_slide_layouts",
+    host: "ppt",
+    executor: "ppt.getSlideLayouts",
+    description: "列出演示文稿所有母版下的版式（index/名称），index 即 ppt_add_slide 的 layout_index。",
+    parameters: schema(),
   },
   {
     name: "attachment_list",

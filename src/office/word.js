@@ -754,4 +754,55 @@ registry["word.createStyle"] = async (args) => {
   });
 };
 
+/* ---------------- 全量 API：通用代码执行（word_run_code） ---------------- */
+
+/**
+ * 在 Word.run 回调内执行 AI 生成的任意 Word.js 代码，开放完整 Word 对象模型，
+ * 作为内置 word_* 工具未覆盖能力的兜底入口。
+ * - 作用域注入 Word 与 context；代码体支持 await / return
+ * - 返回值在 run 结束前完成序列化（已 load 的代理对象经 toJSON 自动展开为普通数据）
+ * - 带超时保护，避免 AI 代码死循环导致工具调用永久挂起
+ */
+registry["word.runCode"] = async (args) => {
+  const code = String(args?.code ?? "").trim();
+  if (!code) throw new Error("缺少必填参数 code（在 Word.run 回调内执行的 JavaScript 源码）");
+  const timeoutMs = Math.min(Math.max(Number(args?.timeout_ms) || 30000, 1000), 120000);
+
+  let serialized;
+  await Word.run(async (ctx) => {
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const fn = new AsyncFunction("Word", "context", `"use strict";\n${code}`);
+    let timer;
+    const work = (async () => {
+      const result = await fn(Word, ctx);
+      await ctx.sync(); // 收尾同步：确保队列中未提交的写入全部落地
+      let out;
+      try {
+        out = JSON.stringify(result ?? null);
+      } catch {
+        out = JSON.stringify(String(result));
+      }
+      return out;
+    })();
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`代码执行超时（${timeoutMs}ms）：请检查是否存在死循环、或读取属性前未 load/未 await context.sync()`)),
+        timeoutMs
+      );
+    });
+    try {
+      serialized = await Promise.race([work, timeout]);
+    } finally {
+      clearTimeout(timer);
+      work.catch(() => {}); // 超时后代码仍在后台收尾，吞掉迟到的 rejection
+    }
+  });
+
+  try {
+    return { ok: true, result: JSON.parse(serialized) };
+  } catch {
+    return { ok: true, result: serialized };
+  }
+};
+
 export { registry };

@@ -1,8 +1,11 @@
 /**
  * PowerPoint 执行器（Office.js PowerPoint API）
- * 说明：PowerPoint JS API 的部分能力（文本读写、添加形状等）要求较新的 API 集合
- * （PowerPointApi 1.8+，Office 2024 / 新版 Microsoft 365 满足），全部做了特性检测，
- * 不支持时返回明确的错误信息。
+ * 说明：PowerPoint JS API 的部分能力按 API 集合分批提供：
+ *  - 删除形状 Shape.delete()：PowerPointApi 1.3+
+ *  - 形状移动/缩放/名称/填充/线条、添加几何形状/线条/文本框：PowerPointApi 1.4+
+ *  - 文本框/图片/表格的添加：PowerPointApi 1.8（addPicture/addTable）
+ *  - 组合/解组：PowerPointApi 1.8+
+ * （Office 2024 / 新版 Microsoft 365 均满足），全部做了特性检测，不支持时返回明确的错误信息。
  */
 import { stripDataUrl } from "./index";
 
@@ -29,6 +32,77 @@ function shapePos(s) {
     width: s.width,
     height: s.height,
   };
+}
+
+/* ---------------- 形状级操作公共辅助 ---------------- */
+
+/** 读取一页的全部形状（核心属性 + 文本；层级 zOrder 按 API 支持情况补充） */
+async function getSlideShapes(ctx, index) {
+  const n = Number(index);
+  if (!Number.isInteger(n) || n < 0) throw new Error("slide_index 必须是非负整数");
+  const slides = await loadSlides(ctx);
+  if (n >= slides.items.length) throw new Error(`幻灯片 index ${n} 超出范围（共 ${slides.items.length} 页）`);
+  const shapes = slides.items[n].shapes;
+  shapes.load("id,name,type,left,top,width,height,textFrame/textRange/text");
+  await ctx.sync();
+  let hasZOrder = false;
+  try {
+    shapes.load("zOrderPosition");
+    await ctx.sync();
+    hasZOrder = true;
+  } catch { /* 旧版 API 无层级属性 */ }
+  return { shapes, hasZOrder, index: n };
+}
+
+function shapeInfo(s, hasZOrder = false) {
+  const info = { ...shapePos(s) };
+  if (hasZOrder && typeof s.zOrderPosition === "number") info.zOrder = s.zOrderPosition;
+  const text = s.textFrame?.textRange?.text;
+  if (text) info.text = text;
+  return info;
+}
+
+/**
+ * 按 shape_id / shape_ids / match_text 选定目标形状
+ * @returns {{ list: Array, matchedCount: number }} list=命中的形状；matchedCount=实际匹配总数
+ */
+function pickTargets(shapes, args = {}) {
+  const items = shapes.items;
+  if (args.shape_id != null || args.shape_ids != null) {
+    const raw = args.shape_ids != null ? args.shape_ids : [args.shape_id];
+    const ids = (Array.isArray(raw) ? raw : [raw]).map(Number).filter((v) => Number.isFinite(v));
+    if (!ids.length) throw new Error("shape_id / shape_ids 无效");
+    const missing = ids.filter((id) => !items.some((s) => Number(s.id) === id));
+    if (missing.length) throw new Error(`未找到 id=${missing.join("、")} 的形状（可先用 ppt_list_shapes 查看本页形状）`);
+    return { list: items.filter((s) => ids.includes(Number(s.id))), matchedCount: ids.length };
+  }
+  if (args.match_text) {
+    const needle = String(args.match_text);
+    const hits = items.filter((s) => (s.textFrame?.textRange?.text || "").includes(needle));
+    if (!hits.length) throw new Error(`未找到包含“${needle}”的形状（可先用 ppt_list_shapes 查看本页形状）`);
+    return { list: args.match_all ? hits : [hits[0]], matchedCount: hits.length };
+  }
+  throw new Error("必须提供 shape_id / shape_ids / match_text 之一");
+}
+
+/** 单目标操作公共校验：只接受 shape_id 或 match_text */
+function requireSingleSelector(args) {
+  if (args?.shape_id == null && !args?.match_text) throw new Error("必须提供 shape_id 或 match_text");
+  if (args?.shape_ids != null) throw new Error("本操作一次只能作用于一个形状，请改用 shape_id；批量请用 ppt_delete_shape");
+}
+
+/** 枚举幻灯片母版下的全部版式（id/name，顺序即 ppt_add_slide 的 layout_index） */
+async function listLayouts(ctx) {
+  const masters = ctx.presentation.slideMasters;
+  masters.load("items");
+  await ctx.sync();
+  const layouts = [];
+  for (const m of masters.items) {
+    m.layouts.load("id,name");
+    await ctx.sync();
+    for (const l of m.layouts.items) layouts.push({ id: l.id, name: l.name });
+  }
+  return layouts;
 }
 
 /* ---------------- 执行器 ---------------- */
@@ -127,15 +201,7 @@ registry["ppt.addSlide"] = async (args) => {
     let layouts = null;
     if (args?.layout_index != null) {
       try {
-        const masters = ctx.presentation.slideMasters;
-        masters.load("items");
-        await ctx.sync();
-        layouts = [];
-        for (const m of masters.items) {
-          m.layouts.load("id,name");
-          await ctx.sync();
-          for (const l of m.layouts.items) layouts.push({ id: l.id, name: l.name });
-        }
+        layouts = await listLayouts(ctx);
         const chosen = layouts[Number(args.layout_index)];
         if (!chosen) throw new Error(`layout_index 超出范围（共 ${layouts.length} 个版式）`);
         layoutId = chosen.id;
@@ -358,6 +424,290 @@ registry["ppt.setSlideNotes"] = async (args) => {
     if (!done) throw new Error("未能写入备注（当前 API 不支持修改备注文本）");
     await ctx.sync();
     return { ok: true, slideIndex: index };
+  });
+};
+
+/* ---------------- 形状级操作执行器 ---------------- */
+
+registry["ppt.listShapes"] = async (args) => {
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, hasZOrder, index } = await getSlideShapes(ctx, args?.slide_index);
+    return {
+      slideIndex: index,
+      shapeCount: shapes.items.length,
+      shapes: shapes.items.map((s) => shapeInfo(s, hasZOrder)),
+      note: "type=group 为组合形状，作为整体列出与操作；组合内的子形状需先 ppt_ungroup_shape 解散组合",
+    };
+  });
+};
+
+registry["ppt.deleteShape"] = async (args) => {
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    const { list, matchedCount } = pickTargets(shapes, args);
+    if (!hasFn(list[0], "delete")) {
+      throw new Error("当前 PowerPoint JS API 不支持删除形状（需要 PowerPointApi 1.3+）");
+    }
+    const deletedIds = list.map((t) => Number(t.id));
+    for (const t of list) t.delete();
+    await ctx.sync();
+    const leftover = args?.match_text && !args?.match_all ? matchedCount - list.length : 0;
+    return {
+      ok: true,
+      slideIndex: index,
+      deletedShapeIds: deletedIds,
+      deletedCount: deletedIds.length,
+      remainingShapes: shapes.items.length - list.length,
+      note: leftover > 0
+        ? `本页还有 ${leftover} 个包含“${args.match_text}”的形状未删除，可再次调用并配合 match_all=true`
+        : undefined,
+    };
+  });
+};
+
+registry["ppt.moveShape"] = async (args) => {
+  requireSingleSelector(args);
+  const updates = {};
+  for (const k of ["left", "top", "width", "height"]) {
+    if (args?.[k] != null) {
+      const v = Number(args[k]);
+      if (!Number.isFinite(v) || v < 0) throw new Error(`${k} 必须是非负数字（磅）`);
+      updates[k] = v;
+    }
+  }
+  if (!Object.keys(updates).length) throw new Error("至少提供 left / top / width / height 之一");
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    const { list } = pickTargets(shapes, args);
+    const target = list[0];
+    for (const [k, v] of Object.entries(updates)) target[k] = v;
+    try {
+      await ctx.sync();
+    } catch (e) {
+      throw new Error(`移动/缩放形状失败（需要 PowerPointApi 1.4+，Office 2024/新版 365 支持）：${e?.message || e}`);
+    }
+    return {
+      ok: true,
+      slideIndex: index,
+      shapeId: Number(target.id),
+      updated: updates,
+      note: list.length > 1 ? `匹配到 ${list.length} 个形状，已作用于第一个（其余请用 shape_id 指定）` : undefined,
+    };
+  });
+};
+
+registry["ppt.formatShape"] = async (args) => {
+  requireSingleSelector(args);
+  if (args?.fill_color == null && !args?.fill_clear && args?.line_color == null && args?.line_weight == null && !args?.name) {
+    throw new Error("至少提供 fill_color / fill_clear / line_color / line_weight / name 之一");
+  }
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    const { list } = pickTargets(shapes, args);
+    const target = list[0];
+    const applied = {};
+    if (args?.name) {
+      target.name = String(args.name);
+      applied.name = String(args.name);
+    }
+    if (args?.fill_clear || args?.fill_color != null) {
+      if (!hasFn(target.fill, "setSolidColor") && !hasFn(target.fill, "clear")) {
+        throw new Error("当前 PowerPoint JS API 不支持设置形状填充（需要 PowerPointApi 1.4+）");
+      }
+      if (args.fill_clear) {
+        target.fill.clear();
+        applied.fill = "已清除（透明）";
+      } else {
+        target.fill.setSolidColor(String(args.fill_color));
+        applied.fill = String(args.fill_color);
+      }
+    }
+    if (args?.line_color != null || args?.line_weight != null) {
+      if (!target.lineFormat) throw new Error("该形状不支持线条/边框格式（如图片）");
+      if (args.line_color != null) target.lineFormat.color = String(args.line_color);
+      if (args.line_weight != null) target.lineFormat.weight = Number(args.line_weight);
+      target.lineFormat.visible = true; // 设置边框颜色/粗细时自动显示边框
+      applied.line = { color: args.line_color ?? undefined, weight: args.line_weight ?? undefined };
+    }
+    try {
+      await ctx.sync();
+    } catch (e) {
+      throw new Error(`设置形状格式失败（需要 PowerPointApi 1.4+）：${e?.message || e}`);
+    }
+    return {
+      ok: true,
+      slideIndex: index,
+      shapeId: Number(target.id),
+      applied,
+      note: list.length > 1 ? `匹配到 ${list.length} 个形状，已作用于第一个（其余请用 shape_id 指定）` : undefined,
+    };
+  });
+};
+
+registry["ppt.formatText"] = async (args) => {
+  requireSingleSelector(args);
+  const fmtKeys = ["font_name", "font_size", "bold", "italic", "underline", "color", "align"];
+  if (!fmtKeys.some((k) => args?.[k] != null)) {
+    throw new Error("至少提供一个格式属性（font_name/font_size/bold/italic/underline/color/align）");
+  }
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    const { list } = pickTargets(shapes, args);
+    const target = list[0];
+    const textRange = target.textFrame?.textRange;
+    if (!textRange) throw new Error("该形状不含可编辑文本（图片、线条、表格等不适用本工具）");
+    const f = textRange.font;
+    if (args?.font_name != null) f.name = String(args.font_name);
+    if (args?.font_size != null) f.size = Number(args.font_size);
+    if (args?.bold != null) f.bold = !!args.bold;
+    if (args?.italic != null) f.italic = !!args.italic;
+    if (args?.underline != null) f.underline = String(args.underline);
+    if (args?.color != null) f.color = String(args.color);
+    if (args?.align != null) textRange.paragraphFormat.horizontalAlignment = String(args.align);
+    try {
+      await ctx.sync();
+    } catch (e) {
+      throw new Error(`设置文字格式失败（需要 PowerPointApi 1.4+）：${e?.message || e}`);
+    }
+    return {
+      ok: true,
+      slideIndex: index,
+      shapeId: Number(target.id),
+      applied: Object.fromEntries(fmtKeys.filter((k) => args[k] != null).map((k) => [k, args[k]])),
+      note: list.length > 1 ? `匹配到 ${list.length} 个形状，已作用于第一个（其余请用 shape_id 指定）` : undefined,
+    };
+  });
+};
+
+registry["ppt.addShape"] = async (args) => {
+  const index = Number(args?.slide_index);
+  if (!Number.isInteger(index) || index < 0) throw new Error("slide_index 必须是非负整数");
+  const kind = args?.kind === "line" ? "line" : "geometric";
+  const opts = {
+    left: args?.left != null ? Number(args.left) : 60,
+    top: args?.top != null ? Number(args.top) : 60,
+    width: args?.width != null ? Number(args.width) : 200,
+    height: args?.height != null ? Number(args.height) : 100,
+  };
+  return PowerPoint.run(async (ctx) => {
+    const slides = await loadSlides(ctx);
+    if (index >= slides.items.length) throw new Error(`幻灯片 index ${index} 超出范围（共 ${slides.items.length} 页）`);
+    const shapes = slides.items[index].shapes;
+    let shape;
+    if (kind === "line") {
+      if (!hasFn(shapes, "addLine")) {
+        throw new Error("当前 PowerPoint JS API 不支持添加线条（需要 PowerPointApi 1.4+）");
+      }
+      shape = shapes.addLine(String(args?.connector || "straight"), opts);
+    } else {
+      if (!hasFn(shapes, "addGeometricShape")) {
+        throw new Error("当前 PowerPoint JS API 不支持添加几何形状（需要 PowerPointApi 1.4+）");
+      }
+      shape = shapes.addGeometricShape(String(args?.geometry || "rectangle"), opts);
+    }
+    if (args?.name) shape.name = String(args.name);
+    const notes = [];
+    if (kind === "geometric") {
+      if (args?.fill_color != null) shape.fill.setSolidColor(String(args.fill_color));
+      const text = String(args?.text ?? "");
+      if (text) {
+        shape.textFrame.textRange.text = text;
+        if (args?.font_size != null) shape.textFrame.textRange.font.size = Number(args.font_size);
+        if (args?.font_color != null) shape.textFrame.textRange.font.color = String(args.font_color);
+      }
+    } else if (args?.fill_color != null) {
+      notes.push("线条无填充，fill_color 已忽略（请用 line_color）");
+    }
+    if (args?.line_color != null) shape.lineFormat.color = String(args.line_color);
+    if (args?.line_weight != null) shape.lineFormat.weight = Number(args.line_weight);
+    shape.load("id");
+    try {
+      await ctx.sync();
+    } catch (e) {
+      throw new Error(`插入形状失败（geometry/connector 需为 PowerPoint 枚举值，API 需要 PowerPointApi 1.4+）：${e?.message || e}`);
+    }
+    return {
+      ok: true,
+      slideIndex: index,
+      shapeId: Number(shape.id),
+      kind,
+      geometry: kind === "geometric" ? String(args?.geometry || "rectangle") : undefined,
+      connector: kind === "line" ? String(args?.connector || "straight") : undefined,
+      note: notes.join("；") || undefined,
+    };
+  });
+};
+
+registry["ppt.setShapeZorder"] = async (args) => {
+  const position = String(args?.position || "");
+  if (!["BringToFront", "SendToBack", "BringForward", "SendBackward"].includes(position)) {
+    throw new Error("position 必须是 BringToFront / SendToBack / BringForward / SendBackward 之一");
+  }
+  requireSingleSelector(args);
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    const { list } = pickTargets(shapes, args);
+    const target = list[0];
+    if (!hasFn(target, "setZOrder")) {
+      throw new Error("当前 PowerPoint JS API 不支持调整形状层级（需要较新的 PowerPoint API）");
+    }
+    target.setZOrder(position);
+    await ctx.sync();
+    return { ok: true, slideIndex: index, shapeId: Number(target.id), position };
+  });
+};
+
+registry["ppt.ungroupShape"] = async (args) => {
+  requireSingleSelector(args);
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    const { list } = pickTargets(shapes, args);
+    const target = list[0];
+    try {
+      target.load("group");
+      await ctx.sync();
+    } catch (e) {
+      throw new Error(`读取组合信息失败（需要 PowerPointApi 1.8+）：${e?.message || e}`);
+    }
+    const group = target.group;
+    if (!group || !hasFn(group, "ungroup")) {
+      throw new Error("该形状不是组合形状，无法解散（type=group 的才是组合，可先用 ppt_list_shapes 查看）");
+    }
+    group.ungroup();
+    await ctx.sync();
+    return {
+      ok: true,
+      slideIndex: index,
+      shapeId: Number(target.id),
+      note: "已解散组合，子形状变为独立形状，可用 ppt_list_shapes 重新查看",
+    };
+  });
+};
+
+registry["ppt.getSlideLayouts"] = async () => {
+  return PowerPoint.run(async (ctx) => {
+    let layouts;
+    try {
+      layouts = await listLayouts(ctx);
+    } catch (e) {
+      throw new Error(`读取版式失败（需要 PowerPointApi 1.5+）：${e?.message || e}`);
+    }
+    return { layoutCount: layouts.length, layouts: layouts.map((l, i) => ({ index: i, id: l.id, name: l.name })) };
+  });
+};
+
+registry["ppt.getSlideNotes"] = async (args) => {
+  return PowerPoint.run(async (ctx) => {
+    const { index } = await getSlideShapes(ctx, args?.slide_index);
+    const slide = (await loadSlides(ctx)).items[index];
+    if (!slide.notesPage) {
+      throw new Error("当前 PowerPoint JS API 不支持备注页（需要较新的 API 集合）");
+    }
+    const shapes = slide.notesPage.shapes;
+    shapes.load("textFrame/textRange/text");
+    await ctx.sync();
+    const texts = shapes.items.map((s) => s.textFrame?.textRange?.text || "").filter(Boolean);
+    return { ok: true, slideIndex: index, notes: texts.join("\n"), note: texts.length ? undefined : "该页暂无备注" };
   });
 };
 
