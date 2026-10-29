@@ -851,4 +851,46 @@ registry["ppt.getSlideNotes"] = async (args) => {
   });
 };
 
+registry["ppt.runCode"] = async (args) => {
+  const code = String(args?.code ?? "").trim();
+  if (!code) throw new Error("缺少必填参数 code（在 PowerPoint.run 回调内执行的 JavaScript 源码）");
+  if (code.length > 200000) throw new Error("code 过长（>200K 字符）");
+  const timeoutMs = Math.min(Math.max(Number(args?.timeout_ms) || 30000, 1000), 120000);
+
+  let serialized;
+  await PowerPoint.run(async (ctx) => {
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const fn = new AsyncFunction("PowerPoint", "context", `"use strict";\n${code}`);
+    let timer;
+    const work = (async () => {
+      const result = await fn(PowerPoint, ctx);
+      await ctx.sync(); // 收尾同步：确保队列中未提交的写入全部落地
+      let out;
+      try {
+        out = JSON.stringify(result ?? null);
+      } catch {
+        out = JSON.stringify(String(result));
+      }
+      return out;
+    })();
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`代码执行超时（${timeoutMs}ms）：请检查是否存在死循环、或读取属性前未 load/未 await context.sync()`)),
+        timeoutMs
+      );
+    });
+    try {
+      serialized = await Promise.race([work, timeout]);
+    } finally {
+      clearTimeout(timer);
+      work.catch(() => {}); // 超时后代码仍在后台收尾，吞掉迟到的 rejection
+    }
+  });
+
+  try {
+    return { ok: true, result: JSON.parse(serialized) };
+  } catch {
+    return { ok: true, result: serialized };
+  }
+};
 export { registry };

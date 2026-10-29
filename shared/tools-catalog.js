@@ -896,6 +896,22 @@ export const TOOLS = [
     }, ["slide_index"]),
   },
   {
+    name: "ppt_run_code",
+    host: "ppt",
+    executor: "ppt.runCode",
+    description:
+      "【高级·完整 PowerPoint API 兜底】执行任意 PowerPoint JavaScript API（Office.js 对象模型）代码，开放全部 PPT 能力，" +
+      "覆盖内置 ppt_* 工具未提供的场景：占位符/形状高级操作/组合与层级/表格样式/主题与母版信息/幻灯片切换等。" +
+      "code 为 JavaScript 源码，在 PowerPoint.run 回调内执行：作用域已注入 PowerPoint 与 context（context.presentation 即当前演示文稿），可直接 await。" +
+      "约定：① 读取属性前必须 load() 再 await context.sync()，② 最后 return 一个 JSON 可序列化的普通对象，" +
+      "③ 写入操作直接给属性赋值后 await context.sync()。" +
+      "注意：优先使用内置 ppt_* 工具，仅当无法满足时才用本工具；部分 API 需要较新要求集（Office 2024/新版 365 支持），失败会返回错误码与出错位置。",
+    parameters: schema({
+      code: str("JavaScript 源码，在 PowerPoint.run 回调内执行，作用域注入 PowerPoint 与 context"),
+      timeout_ms: num("（可选）执行超时毫秒，默认 30000，上限 120000"),
+    }, ["code"]),
+  },
+  {
     name: "attachment_list",
     host: "common",
     side: "server",
