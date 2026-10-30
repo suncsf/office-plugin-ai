@@ -2,7 +2,7 @@
 ; 编译：ISCC.exe installer\setup.iss
 
 #define MyAppName "AI 助手（Office 加载项）"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define AddinId "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
 
 [Setup]
@@ -24,7 +24,7 @@ DisableProgramGroupPage=yes
 ; 用户数据目录（%LOCALAPPDATA%\OfficeAI\data）不属于 {app}，卸载不会删除
 
 [Messages]
-WelcomeLabel2=本向导将安装 [name/ver]。%n%n内置 Node.js 运行时，无需额外安装环境。%n%n系统要求：Windows 10 或更高版本；Microsoft Office 2021 或更高版本（Word / Excel / PowerPoint）。%n%n安装完成后，请在打开的“控制台”中确认服务已启动。
+WelcomeLabel2=本向导将安装 [name/ver]。%n%n内置 Node.js 运行时，无需额外安装环境。%n%n系统要求：Windows 10 或更高版本；Microsoft Office 2019 或更高版本（Word / Excel / PowerPoint）。%n%n注：Office 2019 使用 IE11 兼容界面，部分高级功能（AI 直接执行代码、PPT 形状级操作）不可用；Office 2021 及以上体验完整。%n%n安装完成后，请在打开的“控制台”中确认服务已启动。
 SelectTasksLabel2=选择要执行的附加任务：
 UninstallAppFullTitle=卸载 %1
 ConfirmUninstall=确定要完全移除 %1 吗？%n%n您的对话与附件数据（%LOCALAPPDATA%\OfficeAI\data）将被保留。
@@ -68,7 +68,7 @@ begin
                RegKeyExists(HKEY_CLASSES_ROOT, 'PowerPoint.Application');
     if not hasWord then
     begin
-      if MsgBox('未检测到 Microsoft Office。本加载项需要 Office 2021 或更高版本（Word/Excel/PowerPoint 至少其一）。' + #13#10 + '仍要继续安装吗？',
+      if MsgBox('未检测到 Microsoft Office。本加载项需要 Office 2019 或更高版本（Word/Excel/PowerPoint 至少其一）。' + #13#10 + '仍要继续安装吗？',
         mbConfirmation, MB_YESNO) = IDNO then
         Result := False;
     end;

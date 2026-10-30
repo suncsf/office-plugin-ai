@@ -1,0 +1,10 @@
+{
+  "name": "office-ai-legacy-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "IE11 兼容版任务窗格（Office 2019）。独立依赖目录：vite.config.legacy.js 以本目录为 root，保证 vue/compiler-sfc 等解析到 vue@2.7 而非根目录的 vue@3。",
+  "dependencies": {
+    "element-ui": "2.15.14",
+    "vue": "2.7.16"
+  }
+}

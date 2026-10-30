@@ -1,7 +1,7 @@
 /**
  * Excel 执行器（Office.js Excel API）
  */
-import { stripDataUrl } from "./index";
+import { stripDataUrl } from "./dataurl";
 
 /* ---------------- 内部工具函数 ---------------- */
 

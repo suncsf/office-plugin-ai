@@ -7,7 +7,7 @@
  *  - 组合/解组：PowerPointApi 1.8+
  * （Office 2024 / 新版 Microsoft 365 均满足），全部做了特性检测，不支持时返回明确的错误信息。
  */
-import { stripDataUrl } from "./index";
+import { stripDataUrl } from "./dataurl";
 
 /* ---------------- 内部工具函数 ---------------- */
 

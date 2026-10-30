@@ -169,6 +169,11 @@ app.post("/api/chat", wrap(async (req, res) => {
   const images = Array.isArray(body.images) ? body.images : [];
   const appType = ["word", "excel", "ppt", "unknown"].includes(body.appType) ? body.appType : "unknown";
   const modelId = body.modelId || null;
+  // 客户端能力声明：IE11 兼容版（caps.legacy）剔除 *_run_code（依赖 async/await，IE11 无法执行）
+  const caps = body.caps && typeof body.caps === "object" ? body.caps : {};
+  const excludeToolNames = caps.legacy
+    ? TOOLS.filter((t) => t.name.endsWith("_run_code")).map((t) => t.name)
+    : null;
 
   // SSE 头
   res.writeHead(200, {
@@ -276,6 +281,7 @@ app.post("/api/chat", wrap(async (req, res) => {
       general: settings.general,
       appType,
       signal: controller.signal,
+      excludeToolNames,
       onDelta: (kind, text) => send({ type: kind === "thinking" ? "thinking_delta" : "content_delta", text }),
       onMessage: (m) => {
         const row = insertMessage(conv.id, m);
@@ -336,6 +342,14 @@ app.post("/api/chat/resume", wrap(async (req, res) => {
 /* ---------------- 静态资源（Vue 构建产物） ---------------- */
 
 app.get(["/", "/index.html", "/taskpane.html"], (req, res) => {
+  // Office 2019 永久版的任务窗格 WebView 锁定为 IE11（Trident），无法运行 Vue3/Element Plus
+  // （Vue3 依赖 Proxy，IE11 无法 polyfill）；UA 检测到 Trident 时返回 IE11 兼容版页面
+  const ua = String(req.headers["user-agent"] || "");
+  const isLegacy = /Trident\/|MSIE /.test(ua);
+  const legacyFile = path.join(distDir, "taskpane-legacy.html");
+  if (isLegacy && fs.existsSync(legacyFile)) {
+    return res.sendFile(legacyFile);
+  }
   const indexFile = path.join(distDir, "index.html");
   if (!fs.existsSync(indexFile)) {
     return res.status(503).send("任务窗格尚未构建：请先执行 npm run build");

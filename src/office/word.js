@@ -8,7 +8,7 @@
  *  - Body: insertText → Replace/Start/End；insertParagraph/insertTable/insertBreak → 仅 Start/End
  *  - select(selectionMode) → 仅 "Select" | "Start" | "End"
  */
-import { stripDataUrl } from "./index";
+import { stripDataUrl } from "./dataurl";
 import { resolveStyleRequest, normalizeAlignment, BUILT_IN_STYLES } from "./style-map";
 
 /* ---------------- 内部工具函数 ---------------- */

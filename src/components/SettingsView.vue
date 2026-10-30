@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive, onMounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus, Delete, Edit, Connection, Link } from "@element-plus/icons-vue";
+import { Plus, Delete, Edit, Connection } from "@element-plus/icons-vue";
 import { store, loadSettings } from "../store";
 import { api } from "../api";
 import { HOST_LABELS } from "../defaults";
@@ -197,20 +197,6 @@ onMounted(async () => {
           </div>
         </div>
       </el-card>
-
-      <!-- 关于 -->
-      <el-card shadow="never" class="card">
-        <div class="about-head">
-          <span class="about-title">AI 助手（Office 加载项）</span>
-          <el-tag size="small" effect="plain">v1.0.0</el-tag>
-        </div>
-        <div class="about-sub">
-          <span>开发人员：<b>suncsf</b></span>
-          <el-link type="primary" :underline="false" href="https://github.com/suncsf" target="_blank" class="about-link">
-            <el-icon><Link /></el-icon>&nbsp;github.com/suncsf
-          </el-link>
-        </div>
-      </el-card>
     </el-scrollbar>
 
     <!-- 模型编辑对话框 -->
@@ -262,27 +248,6 @@ onMounted(async () => {
 .settings {
   height: 100%;
   padding-top: 8px;
-}
-.about-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.about-title {
-  font-weight: 600;
-}
-.about-sub {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #6b7280;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.about-link {
-  font-size: 12px;
-  vertical-align: middle;
 }
 .scroll {
   height: 100%;

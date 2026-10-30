@@ -48,11 +48,7 @@ export function initOffice() {
   });
 }
 
-function stripDataUrl(b64) {
-  const s = String(b64 || "");
-  const idx = s.indexOf("base64,");
-  return idx >= 0 ? s.slice(idx + 7) : s;
-}
+import { stripDataUrl } from "./dataurl";
 
 /**
  * 执行一个工具调用

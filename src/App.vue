@@ -5,6 +5,7 @@ import { HOST_LABELS } from "./defaults";
 import ChatView from "./components/ChatView.vue";
 import HistoryView from "./components/HistoryView.vue";
 import SettingsView from "./components/SettingsView.vue";
+import AboutView from "./components/AboutView.vue";
 
 const hostLabel = computed(() => HOST_LABELS[store.host] || HOST_LABELS.unknown);
 const modelOk = computed(() => store.settings.models.length > 0);
@@ -51,6 +52,9 @@ const modelOk = computed(() => store.settings.models.length > 0);
         </el-tab-pane>
         <el-tab-pane label="设置" name="settings">
           <SettingsView />
+        </el-tab-pane>
+        <el-tab-pane label="关于" name="about">
+          <AboutView />
         </el-tab-pane>
       </el-tabs>
     </main>

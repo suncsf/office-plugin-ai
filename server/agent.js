@@ -42,8 +42,13 @@ export function buildSystemPrompt(appType, general) {
 
 /* ---------------- 工具绑定 ---------------- */
 
-export function toolsForHost(appType) {
-  return TOOLS.filter((t) => t.host === "common" || t.host === appType).map((t) => ({
+export function toolsForHost(appType, excludeNames) {
+  // excludeNames：需要从 LLM 绑定中剔除的工具名（如 IE11 兼容版的 *_run_code——
+  // 其执行依赖 async/await 语言特性，IE11 无法运行）
+  const excluded = excludeNames && excludeNames.length ? new Set(excludeNames) : null;
+  return TOOLS.filter(
+    (t) => (t.host === "common" || t.host === appType) && (!excluded || !excluded.has(t.name))
+  ).map((t) => ({
     type: "function",
     function: { name: t.name, description: t.description, parameters: t.parameters },
   }));
@@ -343,12 +348,12 @@ export function buildGraph({ model, tools, systemPrompt, signal, onThinkingDelta
  */
 export async function runAgentTurn(opts) {
   const {
-    turnId, historyRows, model, general, appType, signal,
+    turnId, historyRows, model, general, appType, signal, excludeToolNames = null,
     onDelta = () => {}, onMessage = () => {}, onInterrupt = () => {},
     waitForResults = async () => [], onUsage = () => {}, serverToolExecutor = null,
   } = opts;
 
-  const tools = model.supportsTools === false ? [] : toolsForHost(appType);
+  const tools = model.supportsTools === false ? [] : toolsForHost(appType, excludeToolNames);
   const systemPrompt = buildSystemPrompt(appType, general);
   const baseMessages = historyToLcMessages(historyRows, { supportsImages: model.supportsImages !== false });
   const chatModel = opts.modelInstance || createChatModel(model, general);

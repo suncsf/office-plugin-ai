@@ -9,3 +9,6 @@ data/
 installer/output/
 installer/staging/
 *.exe
+
+# 本地隐私配置（开发人员/部门），不入库
+about-info.local.js

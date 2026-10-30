@@ -10,5 +10,18 @@
   <body>
     <div id="app"></div>
     <script type="module" src="/src/main.js"></script>
+    <!-- IE11（Office 2019 任务窗格）兜底：不支持 type=module，展示明确提示而非白屏 -->
+    <script nomodule>
+      (function () {
+        var el = document.getElementById("app");
+        if (!el) return;
+        el.innerHTML =
+          '<div style="max-width:360px;margin:60px auto;padding:20px;font-family:Microsoft YaHei,sans-serif;font-size:13px;color:#303133;background:#fff;border:1px solid #e4e7ed;border-radius:10px;line-height:1.8">' +
+          '<div style="font-weight:600;font-size:15px;margin-bottom:8px">⚠️ 当前 WebView 内核过旧</div>' +
+          '<div>本面板在此环境中应使用 IE11 兼容版。若持续看到本页，请说明 Office 版本识别失败：' +
+          '请通过「AI 助手控制台」重新注册加载项，或升级到 Office 2021 / 2024 / Microsoft 365。</div>' +
+          '</div>';
+      })();
+    </script>
   </body>
 </html>
