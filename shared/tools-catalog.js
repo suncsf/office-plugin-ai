@@ -886,9 +886,43 @@ export const TOOLS = [
     }),
   },
   {
+    name: "ppt_get_slide_info",
+    host: "ppt",
+    executor: "ppt.getSlideInfo",
+    description:
+      "获取指定幻灯片的详情：页码、版式名称、背景填充类型、形状数量与类型分布、标签（tags）、备注文字。编辑页面前先用本工具了解该页内容。",
+    parameters: schema({ slide_index: num("幻灯片 index（0 起始）") }, ["slide_index"]),
+  },
+  {
+    name: "ppt_apply_slide_layout",
+    host: "ppt",
+    executor: "ppt.applySlideLayout",
+    pptApi: "1.8",
+    description:
+      "给指定幻灯片应用新版式（Slide.applyLayout）：按所选版式重排占位符与设计。layout_index 可先用 ppt_get_slide_layouts 查看。需要 PowerPointApi 1.8+。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      layout_index: num("版式序号（0 起始，ppt_get_slide_layouts 的 index）"),
+    }, ["slide_index", "layout_index"]),
+  },
+  {
+    name: "ppt_get_slide_image",
+    host: "ppt",
+    executor: "ppt.getSlideImage",
+    pptApi: "1.8",
+    description:
+      "把指定幻灯片渲染为 PNG 图片并保存到对话工作区（用于预览页面效果/缩略图）。可指定 width/height（像素，缺省为页面真实尺寸）。需要 PowerPointApi 1.8+。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      width: num("输出图宽（像素）"),
+      height: num("输出图高（像素）"),
+    }, ["slide_index"]),
+  },
+  {
     name: "ppt_delete_slide",
     host: "ppt",
     executor: "ppt.deleteSlide",
+    pptApi: "1.2",
     description: "删除指定幻灯片。破坏性操作，建议先确认。",
     parameters: schema({ slide_index: num("幻灯片 index（0 起始）") }, ["slide_index"]),
   },
@@ -896,15 +930,17 @@ export const TOOLS = [
     name: "ppt_move_slide",
     host: "ppt",
     executor: "ppt.moveSlide",
-    description: "把幻灯片从 from_index 移动到 to_index。若当前 PowerPoint JS API 不支持移动会返回明确错误。",
+    pptApi: "1.8",
+    description: "把幻灯片从 from_index 移动到 to_index（Slide.moveTo，PowerPointApi 1.8+）。若当前 PowerPoint JS API 不支持移动会返回明确错误。",
     parameters: schema({ from_index: num("原位置（0 起始）"), to_index: num("目标位置（0 起始）") }, ["from_index", "to_index"]),
   },
   {
     name: "ppt_insert_textbox",
     host: "ppt",
     executor: "ppt.insertTextbox",
+    pptApi: "1.4",
     description:
-      "在幻灯片上插入文本框。坐标与尺寸单位为磅（默认页面 960x540）。可设置 font_size/bold/color/align(Left/Center/Right)。",
+      "在幻灯片上插入文本框。坐标与尺寸单位为磅（默认页面 960x540）。字符格式：font_size/bold/color/align(Left/Center/Right)；文本框级：vertical_alignment（垂直对齐）、word_wrap（自动换行）、margin_*（内边距）。",
     parameters: schema({
       slide_index: num("幻灯片 index（0 起始），必填（可先用 ppt_list_slides 查看）"),
       text: str("文本内容（\\n 换行）"),
@@ -916,12 +952,19 @@ export const TOOLS = [
       bold: bool("加粗"),
       color: str("文字颜色 #RRGGBB"),
       align: str("水平对齐", ["Left", "Center", "Right"]),
+      vertical_alignment: str("垂直对齐", ["Top", "Middle", "Bottom", "TopCentered", "MiddleCentered", "BottomCentered"]),
+      word_wrap: bool("自动换行，默认 true"),
+      margin_left: num("文本框左内边距（磅）"),
+      margin_right: num("文本框右内边距（磅）"),
+      margin_top: num("文本框上内边距（磅）"),
+      margin_bottom: num("文本框下内边距（磅）"),
     }, ["text"]),
   },
   {
     name: "ppt_set_shape_text",
     host: "ppt",
     executor: "ppt.setShapeText",
+    pptApi: "1.4",
     description:
       "修改幻灯片上已有形状/文本框的文字：用 shape_id 精确定位，或用 match_text 匹配第一个包含该文本的形状。",
     parameters: schema({
@@ -952,20 +995,25 @@ export const TOOLS = [
     name: "ppt_get_image",
     host: "ppt",
     executor: "ppt.getImage",
+    pptApi: "1.10",
     description:
-      "把幻灯片上的图片形状导出为图片文件（保存到对话工作区并返回文件名）。之后可用 image_process 裁剪/缩放，再用 ppt_insert_image 的 file 参数插回（实现「裁剪页内图片」）。" +
-      "用 shape_id 或 match_text 定位（先 ppt_list_shapes 查看 type=picture 的形状）。需要 PowerPointApi 1.10+（较新 Microsoft 365 支持，Office 2024 可能不支持，不支持时会明确报错）。",
+      "把幻灯片上的图片形状（type=image）导出为图片文件（保存到对话工作区并返回文件名）。之后可用 image_process 裁剪/缩放，再用 ppt_set_shape_fill_image 填回原形状（实现「替换图片内容」）或 ppt_insert_image 的 file 参数另插（实现「裁剪页内图片」）。" +
+      "可指定导出格式（png/jpeg）与输出宽高（像素）。用 shape_id 或 match_text 定位（先 ppt_list_shapes 查看 type=image 的形状）。需要 PowerPointApi 1.10+（较新 Microsoft 365 支持，Office 2024 可能不支持，不支持时会明确报错）。",
     parameters: schema({
       slide_index: num("幻灯片 index（0 起始）"),
       shape_id: num("图片形状 id"),
       match_text: str("匹配文本（包含即命中，取第一个）"),
+      format: str("导出格式", ["png", "jpeg"]),
+      width: num("输出宽（像素，缺省原始尺寸）"),
+      height: num("输出高（像素，缺省原始尺寸）"),
     }, ["slide_index"]),
   },
   {
     name: "ppt_insert_table",
     host: "ppt",
     executor: "ppt.insertTable",
-    description: "在幻灯片上插入表格，data 为可选二维数组（行优先）。",
+    pptApi: "1.8",
+    description: "在幻灯片上插入表格，data 为可选二维数组（行优先）。需要 PowerPointApi 1.8+。",
     parameters: schema({
       slide_index: num("幻灯片 index（0 起始）"),
       rows: num("行数"),
@@ -991,17 +1039,35 @@ export const TOOLS = [
     parameters: schema({ slide_index: num("幻灯片 index（0 起始）") }, ["slide_index"]),
   },
   {
+    name: "ppt_set_slide_background",
+    host: "ppt",
+    executor: "ppt.setSlideBackground",
+    pptApi: "1.10",
+    description:
+      "设置幻灯片背景：纯色（color + 可选 transparency 0~1）、渐变（gradient_type：Linear/Radial/Rectangular/Path/ShadeFromTitle，色标由当前主题决定）、图片背景（base64/file，工作区图片可用 image_process 预处理后传入；也可传渐变图精确配色）或 reset=true 重置为母版背景。需要 PowerPointApi 1.10+。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      color: str("纯色背景颜色 #RRGGBB 或英文色名"),
+      gradient_type: str("渐变背景类型（色标由当前主题决定；需要精确配色请用 image_process 生成渐变图后以 base64/file 设置）", ["Linear", "Radial", "Rectangular", "Path", "ShadeFromTitle"]),
+      base64: str("背景图片 base64 或 dataURL（与 file 二选一）"),
+      file: str("工作区图片文件相对路径（与 base64 二选一）"),
+      transparency: num("背景透明度 0（不透明）~ 1（全透明）"),
+      reset: bool("重置为母版背景（忽略其他参数）"),
+    }, ["slide_index"]),
+  },
+  {
     name: "ppt_list_shapes",
     host: "ppt",
     executor: "ppt.listShapes",
     description:
-      "列出指定幻灯片上的所有形状：id、名称、类型（textBox/geometricShape/picture/table/group/line 等）、位置与尺寸（磅）、层级顺序（zOrder）、文本内容。对形状做删除/移动/改格式前，先用本工具定位目标。",
+      "列出指定幻灯片上的所有形状：id、名称、类型（image=图片/textBox=文本框/geometricShape=几何形状/table=表格/group=组合/line=线条/placeholder=占位符等）、位置与尺寸（磅）、层级顺序（zOrder）、文本内容。对形状做删除/移动/改格式前，先用本工具定位目标。",
     parameters: schema({ slide_index: num("幻灯片 index（0 起始）") }, ["slide_index"]),
   },
   {
     name: "ppt_delete_shape",
     host: "ppt",
     executor: "ppt.deleteShape",
+    pptApi: "1.3",
     description:
       "删除幻灯片上的形状（文本框/图片/表格/几何形状/组合均可）。用 shape_id 精确删除，或用 shape_ids 一次删多个；也可用 match_text 匹配包含该文本的形状（默认只删第一个，match_all=true 删除全部匹配）。组合形状会连同其中所有子形状一起删除。破坏性操作，建议先用 ask_user 确认。",
     parameters: schema({
@@ -1016,32 +1082,45 @@ export const TOOLS = [
     name: "ppt_move_shape",
     host: "ppt",
     executor: "ppt.moveShape",
+    pptApi: "1.4",
     description:
-      "移动/缩放幻灯片上的形状：设置 left/top（位置）与 width/height（尺寸），单位磅，仅传入需要修改的项。常见页面尺寸 960×540 磅（16:9）。用 shape_id 或 match_text 定位。",
+      "移动/缩放/旋转/对齐幻灯片上的任意控件（文本框、图片、表格、几何形状、线条、组合等）：" +
+      "left/top（绝对位置）、dx/dy（相对当前位置位移，可为负）、width/height（尺寸）、rotation（旋转角度，度，需 1.10+）、" +
+      "h_align/v_align（页面级水平/垂直对齐：left/center/right、top/middle/bottom）。单位磅，仅传入需要修改的项。常见页面尺寸 960×540 磅（16:9）。用 shape_id 或 match_text 定位。",
     parameters: schema({
       slide_index: num("幻灯片 index（0 起始）"),
       shape_id: num("形状 id"),
       match_text: str("匹配文本（包含即命中，取第一个）"),
       left: num("新左边距（磅）"),
       top: num("新上边距（磅）"),
+      dx: num("水平位移（磅，可为负，基于当前位置）"),
+      dy: num("垂直位移（磅，可为负，基于当前位置）"),
       width: num("新宽度（磅）"),
       height: num("新高度（磅）"),
+      rotation: num("旋转角度（度，顺时针为正；需要 PowerPointApi 1.10+）"),
+      h_align: str("页面水平对齐", ["left", "center", "right"]),
+      v_align: str("页面垂直对齐", ["top", "middle", "bottom"]),
     }, ["slide_index"]),
   },
   {
     name: "ppt_format_shape",
     host: "ppt",
     executor: "ppt.formatShape",
+    pptApi: "1.4",
     description:
-      "设置形状外观：填充色、边框（线条）颜色与粗细、重命名。颜色用 #RRGGBB 或英文色名；fill_clear=true 清除填充变透明；设置边框颜色/粗细时会自动显示边框。用 shape_id 或 match_text 定位。",
+      "设置形状外观：填充色与填充透明度、边框（线条）颜色/粗细/虚线样式/双线组合样式/线条透明度、重命名。颜色用 #RRGGBB 或英文色名；fill_clear=true 清除填充变透明；设置边框属性时会自动显示边框。用 shape_id 或 match_text 定位。",
     parameters: schema({
       slide_index: num("幻灯片 index（0 起始）"),
       shape_id: num("形状 id"),
       match_text: str("匹配文本（包含即命中，取第一个）"),
       fill_color: str("填充颜色"),
       fill_clear: bool("清除填充（变透明）"),
+      fill_transparency: num("填充透明度 0（不透明）~ 1（全透明），如 0.3 做蒙版效果"),
       line_color: str("边框/线条颜色"),
       line_weight: num("边框粗细（磅）"),
+      line_dash: str("边框/线条虚线样式", ["Solid", "Dash", "RoundDot", "SquareDot", "DashDot", "LongDash", "LongDashDot", "DashDotDot", "SystemDash", "SystemDot"]),
+      line_style: str("边框/线条组合样式", ["Single", "ThickThin", "ThinThick", "ThickBetweenThin", "ThinThin"]),
+      line_transparency: num("边框/线条透明度 0（不透明）~ 1（全透明）"),
       name: str("重命名形状"),
     }, ["slide_index"]),
   },
@@ -1049,8 +1128,9 @@ export const TOOLS = [
     name: "ppt_format_text",
     host: "ppt",
     executor: "ppt.formatText",
+    pptApi: "1.4",
     description:
-      "设置形状内文字的格式（作用于该形状全部文本）：字体名称、字号（磅）、加粗、斜体、下划线、颜色、水平对齐。仅传入需要修改的项。用 shape_id 或 match_text 定位形状。",
+      "设置形状内文字/文本框的格式（作用于该形状全部文本）。字符级：字体名称、字号（磅）、加粗、斜体、下划线、颜色、上标/下标/删除线/小型大写/全部大写（1.8+）、段落对齐、缩进级别（1.10+）。段落级：项目符号显隐（bullet_visible，1.4+）、编号/项目符号类型与样式（bullet_type/bullet_style，1.10+，支持中文编号样式）。文本框级：垂直对齐（vertical_alignment）、自动换行（word_wrap）、自适应（auto_size：None/TextToFitShape/ShapeToFitText）、内边距（margin_left/right/top/bottom）。仅传入需要修改的项。用 shape_id 或 match_text 定位形状。",
     parameters: schema({
       slide_index: num("幻灯片 index（0 起始）"),
       shape_id: num("形状 id"),
@@ -1062,12 +1142,29 @@ export const TOOLS = [
       underline: str("下划线", ["None", "Single", "Double", "Dotted", "Heavy"]),
       color: str("文字颜色 #RRGGBB"),
       align: str("水平对齐", ["Left", "Center", "Right", "Justify"]),
+      subscript: bool("下标（需 PowerPointApi 1.8+）"),
+      superscript: bool("上标（需 PowerPointApi 1.8+）"),
+      strikethrough: bool("删除线（需 PowerPointApi 1.8+）"),
+      small_caps: bool("小型大写字母（需 PowerPointApi 1.8+）"),
+      all_caps: bool("全部大写（需 PowerPointApi 1.8+）"),
+      indent_level: num("段落缩进级别 0~8（需 PowerPointApi 1.10+）"),
+      bullet_visible: bool("项目符号显隐（true=显示，false=隐藏；1.4+）"),
+      bullet_type: str("符号类型", ["None", "Numbered", "Unnumbered"]),
+      bullet_style: str("编号/符号样式（需 1.10+，常用：ArabicNumeralPeriod=1. 2.、ArabicNumeralParenthesisRight=1) 2)、ArabicNumeralPlain=1 2、AlphabetLowercasePeriod=a. b.、AlphabetUppercasePeriod=A. B.、RomanUppercasePeriod=I. II.、RomanLowercasePeriod=i. ii.、SimplifiedChinesePlain=一 二、SimplifiedChinesePeriod=一. 二.、CircleNumberDoubleBytePlain=①②）"),
+      vertical_alignment: str("文本框垂直对齐", ["Top", "Middle", "Bottom", "TopCentered", "MiddleCentered", "BottomCentered"]),
+      word_wrap: bool("自动换行（false=不换行溢出显示）"),
+      auto_size: str("自动调整", ["None", "TextToFitShape", "ShapeToFitText"]),
+      margin_left: num("文本框左内边距（磅）"),
+      margin_right: num("文本框右内边距（磅）"),
+      margin_top: num("文本框上内边距（磅）"),
+      margin_bottom: num("文本框下内边距（磅）"),
     }, ["slide_index"]),
   },
   {
     name: "ppt_add_shape",
     host: "ppt",
     executor: "ppt.addShape",
+    pptApi: "1.4",
     description:
       "在幻灯片上插入几何形状或线条。kind: geometric=几何形状（默认，geometry 取 PowerPoint GeometricShapeType 值，常用 rectangle/roundedRectangle/ellipse/triangle/rightArrow/leftArrow/upArrow/downArrow/diamond/pentagon/hexagon/star5Points/heart/cloud/lightningBolt）；line=线条（connector: straight/elbow/curve，left/top 为起点，left+width/top+height 为终点）。可同时设置填充/线条颜色、名称与形状内文字。",
     parameters: schema({
@@ -1092,6 +1189,7 @@ export const TOOLS = [
     name: "ppt_set_shape_zorder",
     host: "ppt",
     executor: "ppt.setShapeZorder",
+    pptApi: "1.8",
     description:
       "调整形状的层级顺序（前后遮挡关系）：BringToFront=置顶，SendToBack=置底，BringForward=上移一层，SendBackward=下移一层。用 shape_id 或 match_text 定位。",
     parameters: schema({
@@ -1105,6 +1203,7 @@ export const TOOLS = [
     name: "ppt_ungroup_shape",
     host: "ppt",
     executor: "ppt.ungroupShape",
+    pptApi: "1.8",
     description:
       "解散指定组合形状（type=group），其子形状变为独立形状。若要删除/修改组合内的单个元素，先解组再用 ppt_list_shapes 定位。用 shape_id 或 match_text 定位。",
     parameters: schema({
@@ -1159,6 +1258,160 @@ export const TOOLS = [
     }, ["slide_index"]),
   },
   {
+    name: "ppt_get_api_info",
+    host: "ppt",
+    executor: "ppt.getApiInfo",
+    description:
+      "自动检测当前 Office 支持的 PowerPoint API 能力：最高需求集版本（PowerPointApi 1.x）、每项能力是否可用（删除形状/移动缩放/组合/表格美化/页面背景与渐变/形状旋转/显隐/调整值/超链接/编号样式/视图跟随/导出图片等）、Office.js 明确不支持的能力（隐藏幻灯片/文档内裁剪/正式版插图/形状渐变与阴影/线条箭头/行距段距等）。当某个 ppt_* 工具报「需要 PowerPointApi x.x+」或对能力有疑问时调用本工具确认，避免反复试错。",
+    parameters: schema(),
+  },
+  {
+    name: "ppt_get_shape_format",
+    host: "ppt",
+    executor: "ppt.getShapeFormat",
+    description:
+      "读取形状的格式详情：填充（类型/颜色/透明度）、边框（显隐/颜色/粗细）、旋转角度、可见性、无障碍文本、层级（zOrder）、位置尺寸与文字。设置格式前（ppt_format_shape/ppt_move_shape）可先用本工具读取当前值。需要 PowerPointApi 1.4+（旋转/显隐/无障碍部分需要 1.10+，不支持时对应项省略）。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_set_shape_visible",
+    host: "ppt",
+    executor: "ppt.setShapeVisible",
+    pptApi: "1.10",
+    description:
+      "显示或隐藏幻灯片上的形状（Shape.visible，PowerPointApi 1.10+）：visible=false 隐藏元素（放映时不显示，与删除不同），visible=true 恢复显示。注意：隐藏「幻灯片」本身没有 Office.js API，本工具只能控制单个形状。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      visible: bool("true=显示，false=隐藏"),
+    }, ["slide_index", "visible"]),
+  },
+  {
+    name: "ppt_set_shape_fill_image",
+    host: "ppt",
+    executor: "ppt.setShapeFillImage",
+    pptApi: "1.8",
+    description:
+      "用图片填充形状（ShapeFill.setImage，PowerPointApi 1.8+）：对图片形状（type=image）相当于替换其显示内容，对几何形状相当于变成图片框。来源 base64/file（工作区图片，可先经 image_process 处理）。需要 PowerPointApi 1.8+。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      base64: str("图片 base64 或 dataURL（与 file 二选一）"),
+      file: str("工作区图片文件相对路径（与 base64 二选一）"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_set_shape_hyperlink",
+    host: "ppt",
+    executor: "ppt.setShapeHyperlink",
+    pptApi: "1.10",
+    description:
+      "给形状设置超链接（Shape.setHyperlink，PowerPointApi 1.10+）：address 支持 URL/文件路径/mailto，可附 screen_tip 悬停提示；设置会覆盖已有链接。remove=true 清除该形状的超链接。需要 PowerPointApi 1.10+。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      address: str("链接地址（URL/文件路径/mailto）"),
+      screen_tip: str("悬停提示文字"),
+      remove: bool("true=清除该形状的超链接（忽略 address）"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_set_shape_alt_text",
+    host: "ppt",
+    executor: "ppt.setShapeAltText",
+    pptApi: "1.10",
+    description:
+      "设置形状的无障碍属性（PowerPointApi 1.10+）：title（替代文字标题）、description（替代文字描述，读屏可读）、decorative（是否纯装饰元素）。常用于给图片补写描述。需要 PowerPointApi 1.10+。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      title: str("无障碍标题"),
+      description: str("无障碍描述"),
+      decorative: bool("标记为装饰元素（读屏跳过）"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_group_shapes",
+    host: "ppt",
+    executor: "ppt.groupShapes",
+    pptApi: "1.8",
+    description:
+      "把同一页上的多个形状组合成一个 group（ShapeCollection.addGroup，PowerPointApi 1.8+）：shape_ids 传至少 2 个形状 id（先 ppt_list_shapes 查看）。组合后可整体移动/缩放/调层级；解散用 ppt_ungroup_shape。需要 PowerPointApi 1.8+。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_ids: arr("要组合的形状 id 列表（≥2 个，须在同一页）", num("形状 id")),
+    }, ["slide_index", "shape_ids"]),
+  },
+  {
+    name: "ppt_align_shapes",
+    host: "ppt",
+    executor: "ppt.alignShapes",
+    pptApi: "1.4",
+    description:
+      "把同一页上的多个形状对齐或等距分布（多形状间互相为基准，与 ppt_move_shape 的页面级对齐不同）：shape_ids 传至少 2 个形状 id，mode 选 left（左对齐）/center（水平居中对齐）/right（右对齐）/top（顶对齐）/middle（垂直居中对齐）/bottom（底对齐）/distribute_h（水平等距分布）/distribute_v（垂直等距分布）。排版卡片列表、按钮组、图标行时先对齐再分布，是页面整齐的关键。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_ids: arr("要对齐/分布的形状 id 列表（≥2 个，须在同一页）", num("形状 id")),
+      mode: str("对齐/分布方式", ["left", "center", "right", "top", "middle", "bottom", "distribute_h", "distribute_v"]),
+    }, ["slide_index", "shape_ids", "mode"]),
+  },
+  {
+    name: "ppt_set_shape_adjustments",
+    host: "ppt",
+    executor: "ppt.setShapeAdjustments",
+    pptApi: "1.10",
+    description:
+      "设置形状的调整点（Shape.adjustments，PowerPointApi 1.10+）：控制形状内部比例参数，如圆角矩形（roundedRectangle）index0=圆角半径比例（0~0.5，0.08~0.15 常用）、饼图（pie）角度、箭头形状的箭头比例等。adjustments 传 [{index, value}] 数组；先传 read=true 可读取该形状的调整点数量与当前值（不同形状含义不同，改前先读对比）。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+      adjustments: arr("调整点数组，每项 {index: 序号(0起), value: 比例值}", str('如 {"index": 0, "value": 0.12}')),
+      read: bool("只读取当前调整值（不修改），true 时可省略 adjustments"),
+    }, ["slide_index"]),
+  },
+  {
+    name: "ppt_format_table",
+    host: "ppt",
+    executor: "ppt.formatTable",
+    pptApi: "1.9",
+    description:
+      "美化幻灯片上的表格（PowerPointApi 1.9+，一次可组合多项）：表头样式（header_fill/header_color/header_bold/header_size，作用于第 0 行）、数据区样式（cell_fill/cell_color/cell_font_size/cell_bold，作用于全表）、隔行条纹（band_fill + band_start，默认从第 1 行起隔行填充）、全表对齐（h_align/v_align）、边框（border_color/border_weight/border_dash）、合并单元格（merges: [[起始行,起始列,行跨度,列跨度],...]，行列从 1 起）、行高列宽（row_heights/col_widths，磅数组）、删除行列（delete_rows/delete_cols，0 起始索引数组）。用 shape_id 或 match_text 定位 type=table 的形状。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("表格形状 id"),
+      match_text: str("匹配文本（表格内含该文本即命中）"),
+      header_fill: str("表头行填充色"),
+      header_color: str("表头行文字颜色"),
+      header_bold: bool("表头行加粗"),
+      header_size: num("表头行字号（磅）"),
+      cell_fill: str("全表单元格填充色"),
+      cell_color: str("全表文字颜色"),
+      cell_font_size: num("全表字号（磅）"),
+      cell_bold: bool("全表加粗"),
+      band_fill: str("隔行条纹填充色（斑马纹）"),
+      band_start: num("条纹起始行（默认 1，跳过表头）"),
+      h_align: str("全表水平对齐", ["Left", "Center", "Right", "Justify"]),
+      v_align: str("全表垂直对齐", ["Top", "Middle", "Bottom", "MiddleCentered"]),
+      border_color: str("单元格边框颜色"),
+      border_weight: num("单元格边框粗细（磅）"),
+      border_dash: str("单元格边框虚线样式", ["Solid", "Dash", "RoundDot", "SquareDot", "DashDot", "LongDash"]),
+      merges: arr("合并区域列表，每项 [起始行, 起始列, 行跨度, 列跨度]（行列从 1 起）", str("[1, 1, 1, 3]")),
+      col_widths: arr("各列宽度（磅，按序，最多到列数）", num("列宽磅值")),
+      row_heights: arr("各行高度（磅，按序，最多到行数）", num("行高磅值")),
+      delete_rows: arr("要删除的行索引数组（0 起始）", num("行索引")),
+      delete_cols: arr("要删除的列索引数组（0 起始）", num("列索引")),
+    }, ["slide_index"]),
+  },
+  {
     name: "ppt_run_code",
     host: "ppt",
     executor: "ppt.runCode",
@@ -1189,7 +1442,10 @@ export const TOOLS = [
     side: "server",
     executor: "attachment.read",
     description:
-      "读取附件文档的内容与格式。docx：mode=structure(标题大纲)/text(段落文本)/format(逐段字体、字号、加粗、颜色、对齐、缩进、行距)/tables(表格数据)；xlsx：sheet 选表，mode=structure/text/format(单元格值+数字格式+加粗字体+合并区域+列宽)；pptx：mode=structure/text/format(版式、字体、字号)；txt/md/csv/json 直接返回文本。读取附件格式后，可用 word_create_style/word_apply_style/word_setFormatting/word_setFormatting 等工具按附件样式编排当前文档。",
+      "读取附件文档的内容与格式。docx：mode=structure(标题大纲)/text(段落文本)/format(逐段字体、字号、加粗、颜色、对齐、缩进、行距)/tables(表格数据)；" +
+      "xlsx：sheet 选表，mode=text(单元格值+公式，数字与日期已转换)/format(数字格式+字体加粗斜体颜色+对齐+填充色+边框+合并区域+列宽)/structure(各表概览)；" +
+      "pptx：mode=structure(形状清单：名称/类型/占位符/尺寸)/text(逐形状文本+表格数据+图表序列数据+备注)/format(形状位置尺寸+填充色+边框线色+逐段字体字号加粗颜色对齐)/tables(表格数据)；" +
+      "txt/md/csv/json 直接返回文本。读取附件格式后，可用 word_create_style/word_apply_style/word_setFormatting 等工具按附件样式编排当前文档。",
     parameters: schema({
       id: str("附件 id（来自 attachment_list 或用户消息的附件标注）"),
       mode: str("读取模式", ["structure", "text", "format", "tables"]),

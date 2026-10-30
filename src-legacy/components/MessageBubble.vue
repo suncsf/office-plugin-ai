@@ -1,5 +1,6 @@
 <script>
 import { renderMarkdown } from "../utils";
+import { ElMessage } from "element-ui";
 
 export default {
   name: "MessageBubbleLegacy",
@@ -39,6 +40,33 @@ export default {
     toggleArgs(id) {
       this.$set(this.showArgs, id, !this.showArgs[id]);
     },
+    /* 复制消息原文（IE11: clipboardData；降级: execCommand） */
+    copyMsg() {
+      var text = String(this.message.content || "");
+      if (!text) return;
+      var done = function (ok) {
+        if (ok) ElMessage.success("已复制");
+        else ElMessage.error("复制失败");
+      };
+      if (window.clipboardData && window.clipboardData.setData) {
+        done(window.clipboardData.setData("Text", text));
+        return;
+      }
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.top = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch (e) {
+        ok = false;
+      }
+      document.body.removeChild(ta);
+      done(ok);
+    },
     argText(tc) {
       return JSON.stringify(tc.args, null, 2);
     },
@@ -74,6 +102,7 @@ export default {
 <template>
   <!-- 用户消息 -->
   <div v-if="isUser" class="row user-row">
+    <button v-if="message.content" class="user-copy" title="复制" @click="copyMsg">复制</button>
     <div class="bubble user">
       <div v-if="images.length" class="imgs">
         <img v-for="(img, i) in images" :key="i" :src="img" alt="附件图片" />
@@ -178,6 +207,11 @@ export default {
           </div>
         </template>
       </div>
+
+      <!-- 消息操作 -->
+      <div v-if="message.content" class="msg-actions">
+        <button class="act" @click="copyMsg">复制</button>
+      </div>
     </div>
   </div>
 </template>
@@ -189,6 +223,28 @@ export default {
 }
 .user-row {
   justify-content: flex-end;
+  position: relative;
+}
+.user-copy {
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-right: 6px;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: #909399;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  white-space: nowrap;
+}
+.user-row:hover .user-copy {
+  opacity: 1;
+}
+.user-copy:hover {
+  color: #2563eb;
 }
 .assistant-row {
   justify-content: flex-start;
@@ -221,6 +277,28 @@ export default {
 .bubble.error {
   border-color: #fca5a5;
   background: #fef2f2;
+}
+.msg-actions {
+  text-align: right;
+  margin-top: 6px;
+  opacity: 0.6;
+}
+.bubble.assistant:hover .msg-actions {
+  opacity: 1;
+}
+.act {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #909399;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.act:hover {
+  color: #2563eb;
+  background: #f0f6ff;
 }
 .imgs {
   margin-bottom: 4px;

@@ -33,12 +33,58 @@ export const APP_TYPE_NAMES = {
 
 /* ---------------- 提示词 ---------------- */
 
-export function buildSystemPrompt(appType, general, memories = []) {
+export function buildSystemPrompt(appType, general, memories = [], caps = null) {
   const now = new Date().toLocaleString("zh-CN", { hour12: false });
   const base = String(general.systemPrompt || "")
     .replaceAll("{APP}", APP_TYPE_NAMES[appType] || APP_TYPE_NAMES.unknown)
     + `\n当前应用类型: ${appType}${appType === "unknown" ? "（未知，请先调用 get_office_context 确认）" : ""}\n当前时间: ${now}`;
-  return base + buildMemoryPrompt(memories);
+  return base + buildCapabilityPrompt(caps, general) + buildMemoryPrompt(memories);
+}
+
+/**
+ * 客户端能力自检 → 系统提示词附加块
+ * caps 为任务窗格启动时 detectPptCapabilities() 的结果（随 /api/chat 上报）：
+ * 注入本机 PowerPointApi 最高版本、可用/不可用能力清单与被停用的工具，
+ * 让模型不试错、不调用必然失败的接口。
+ */
+/**
+ * PPT 绘制与美化设计指南（ppt 宿主时随能力摘要注入系统提示词）
+ * 目标：让模型把基础工具组合成「有设计感」的排版动作——统一字号层级、对齐分布、克制用色、卡片化元素。
+ * 「工作流程」行按通用设置 general.pptToolPrecheck 二选一注入：
+ *   false（默认）= 直接编写，不先试调用工具探测可用性；
+ *   true = 编写前先用轻量读取工具确认本机 PPT 工具可用，再开始编写。
+ */
+const PPT_FLOW_DIRECT =
+  "- 工作流程：直接开始编写——新建幻灯片（ppt_add_slide）→ 逐页填充内容（文本框/形状/表格）→ ppt_get_slide_image 渲染预览自查 → 不满意再微调。不要先试调用工具探测可用性；仅美化/修改已有元素前才先读取（位置/文字/格式），不要凭空猜测 id。";
+const PPT_FLOW_PRECHECK =
+  "- 工作流程：编写前先试试工具能不能用——先调用一次轻量读取工具（ppt_get_presentation_info 或 ppt_list_slides）确认本机 PPT 工具可用，再 ppt_get_slide_info / ppt_list_shapes / ppt_get_textboxes 了解页面现状 → 规划色板与字号层级 → 逐元素执行 → ppt_get_slide_image 渲染预览自查 → 不满意再微调。修改已有元素前务必先读取（位置/文字/格式），不要凭空猜测 id。";
+
+const PPT_DESIGN_GUIDE = `
+[PPT 绘制与美化设计指南（制作/美化幻灯片时遵循）]
+- 视图跟随：你对某一页执行修改类操作后，Office 视图会自动切换到该页，用户可实时看到编辑过程，无需额外告知。
+- 字号层级（全篇统一）：页面标题 28~36 磅加粗、区块标题 18~22、正文 14~18、注释/来源 12；一页内层级不超过 3 级。
+- 对齐与留白：同一行/列的多个元素（卡片、按钮、图标）必须先用 ppt_align_shapes 对齐（left/top 等）再等距分布（distribute_h/distribute_v）；页边距统一 60~80 磅；元素间距一致，宁留白勿拥挤。
+- 用色克制：一页主色不超过 3 种（背景/主文字/强调色各一）；正文用深灰（#1F2937 或 #334155）优于纯黑，次要信息 #64748B；强调色一页只用于一处重点。可从用户主题/品牌色派生深浅变体。
+- 常用美化手法：卡片用圆角矩形（kind=geometric + geometry=roundedRectangle，再用 ppt_set_shape_adjustments 把圆角调到 0.08~0.15）；蒙版/次级底色用 fill_transparency 0.3~0.7；分隔用细线（line_weight 0.75~1 + line_dash）；表格用 ppt_format_table（表头深色底白字 + band_fill 斑马纹 + 细边框 + v_align=Middle）。
+- 重复元素（多张同款卡片/图标行）：循环调用 ppt_add_shape / ppt_insert_textbox 用相同尺寸与样式即可（Office.js 无法读取已有几何形状类型，没有复制工具）。
+- 不支持的能力不要尝试（调用会得到明确报错）：形状渐变填充与阴影、线条箭头样式、段落行距/段距、隐藏整页。需要渐变时用纯色+透明度叠加，或 image_process 生成渐变图后设为背景/填充。
+`.trim();
+
+export function buildCapabilityPrompt(caps, general = null) {
+  if (!caps || caps.host !== "ppt") return "";
+  const lines = ["\n[当前 Office PowerPoint API 能力（本机自动检测）]"];
+  lines.push(`- 支持最高版本：PowerPointApi ${caps.maxVersion || "1.1 以下（Office 过旧，大部分 ppt 工具不可用）"}${caps.hostVersion ? `（Office 版本 ${caps.hostVersion}）` : ""}`);
+  const ok = (caps.capabilities || []).filter((c) => c.ok).map((c) => c.label);
+  const bad = (caps.capabilities || []).filter((c) => !c.ok).map((c) => `${c.label}（需 ${c.api}+）`);
+  if (ok.length) lines.push(`- 可用：${ok.join("、")}`);
+  if (bad.length) lines.push(`- 本机不支持（不要调用对应工具）：${bad.join("、")}`);
+  const disabled = pptDisabledTools(caps);
+  if (disabled.length) lines.push(`- 因版本不足已停用的工具：${disabled.join("、")}`);
+  const ns = (caps.unsupported || []).map((u) => `${u.label}：${u.reason}`);
+  if (ns.length) lines.push(`- Office.js 暂无对应 API 的能力（不要尝试）：\n  · ${ns.join("\n  · ")}`);
+  // 编写流程按设置二选一：默认直接编写；勾选 pptToolPrecheck 后先试工具可用性
+  const flow = general?.pptToolPrecheck === true ? PPT_FLOW_PRECHECK : PPT_FLOW_DIRECT;
+  return "\n" + lines.join("\n") + "\n\n" + PPT_DESIGN_GUIDE + "\n" + flow;
 }
 
 /**
@@ -69,9 +115,28 @@ export function buildMemoryPrompt(memories) {
 
 /* ---------------- 工具绑定 ---------------- */
 
+/** PowerPointApi 版本比较：1.8 -> 1008，1.10 -> 1010（避免 parseFloat 把 1.10 变成 1.1） */
+function verNum(v) {
+  const [a, b] = String(v || "").split(".").map((n) => parseInt(n, 10) || 0);
+  return a * 1000 + b;
+}
+
+/**
+ * 按客户端上报的 PPT 能力，计算需要从 LLM 绑定中剔除的 ppt_* 工具：
+ * 工具定义上的 pptApi 字段（最低需求集版本）> 本机检测到的最高版本 → 剔除。
+ * @param {object|null} caps 客户端 caps.ppt（detectPptCapabilities 结果，含 maxVersion）
+ * @returns {string[]} 要剔除的工具名
+ */
+export function pptDisabledTools(caps) {
+  const maxV = caps?.maxVersion;
+  if (!maxV) return []; // 未上报能力（非 ppt 宿主/旧客户端）不做过滤，交给运行时报错
+  const maxN = verNum(maxV);
+  return TOOLS.filter((t) => t.host === "ppt" && t.pptApi && verNum(t.pptApi) > maxN).map((t) => t.name);
+}
+
 export function toolsForHost(appType, excludeNames) {
   // excludeNames：需要从 LLM 绑定中剔除的工具名（如 IE11 兼容版的 *_run_code——
-  // 其执行依赖 async/await 语言特性，IE11 无法运行）
+  // 其执行依赖 async/await 语言特性，IE11 无法运行；以及本机 PowerPointApi 版本不足的 ppt 工具）
   const excluded = excludeNames && excludeNames.length ? new Set(excludeNames) : null;
   return TOOLS.filter(
     (t) => (t.host === "common" || t.host === appType) && (!excluded || !excluded.has(t.name))
@@ -372,6 +437,7 @@ export function buildGraph({ model, tools, systemPrompt, signal, onThinkingDelta
  *  general         通用设置
  *  appType         word | excel | ppt | unknown
  *  memories        注入系统提示词的长期记忆（[{host,title,content}]，可省略）
+ *  caps            客户端能力声明（caps.ppt = detectPptCapabilities 结果；用于剔除不可用工具与提示词注入）
  *  signal          AbortSignal（用户停止/断开时中断 LLM 调用）
  *  onDelta(kind, text)     token 流：kind = "content" | "thinking"
  *  onMessage(clientMsg)    一条完整消息产生（assistant / tool），由 HTTP 层持久化并推送
@@ -382,13 +448,13 @@ export function buildGraph({ model, tools, systemPrompt, signal, onThinkingDelta
 export async function runAgentTurn(opts) {
   const {
     turnId, historyRows, model, general, appType, signal, excludeToolNames = null,
-    memories = [],
+    memories = [], caps = null,
     onDelta = () => {}, onMessage = () => {}, onInterrupt = () => {},
     waitForResults = async () => [], onUsage = () => {}, serverToolExecutor = null,
   } = opts;
 
   const tools = model.supportsTools === false ? [] : toolsForHost(appType, excludeToolNames);
-  const systemPrompt = buildSystemPrompt(appType, general, memories);
+  const systemPrompt = buildSystemPrompt(appType, general, memories, caps);
   const baseMessages = historyToLcMessages(historyRows, { supportsImages: model.supportsImages !== false });
   const chatModel = opts.modelInstance || createChatModel(model, general);
   const graph = buildGraph({

@@ -149,6 +149,9 @@ async function onSend({ content, images, attachments = [] }) {
         attachments,
         appType: store.host,
         modelId: model.value.id,
+        // 客户端能力声明：legacy=IE11 兼容版；ppt=PPT 宿主启动时检测的 PowerPointApi 能力
+        // 服务端据此剔除本机不可用的 ppt 工具，并在系统提示词注入能力摘要
+        caps: { legacy: false, ppt: store.caps?.ppt || null },
       },
       handleEvent,
       controller.value.signal

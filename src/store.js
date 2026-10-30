@@ -19,6 +19,9 @@ export const store = reactive({
   live: { content: "", thinking: "" },
   interrupt: null, // { turnId, toolCalls, results: [] }
   pendingOpenId: null, // 历史页请求打开的对话 id
+
+  // 本机 Office 能力自检（ppt 宿主启动时自动检测，随 /api/chat 的 caps 上报）
+  caps: { ppt: null },
 });
 
 export function activeModel() {

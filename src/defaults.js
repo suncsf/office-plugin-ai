@@ -13,6 +13,7 @@ export const DEFAULT_GENERAL_CLIENT = {
   maxToolTurns: 25,
   maxToolResultChars: 6000,
   enableShell: true,
+  pptToolPrecheck: false,
 };
 
 export const HOST_LABELS = {

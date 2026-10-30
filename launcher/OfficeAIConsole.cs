@@ -87,6 +87,7 @@ namespace OfficeAI
             hint.SendToBack();
             Controls.Add(hint);
             btnData.Location = new Point(14, 158); btnLog.Location = new Point(134, 158);
+            Controls.Add(MKBtn("ℹ 关于", new Point(254, 158), delegate { ShowAbout(); }));
 
             txtLog = new TextBox();
             txtLog.Multiline = true;
@@ -122,6 +123,7 @@ namespace OfficeAI
             trayMenu.Items.Add("📗 启动 Excel", null, delegate { LaunchOffice("EXCEL.EXE"); });
             trayMenu.Items.Add("📙 启动 PPT", null, delegate { LaunchOffice("POWERPNT.EXE"); });
             trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add("ℹ 关于", null, delegate { ShowAbout(); });
             trayMenu.Items.Add("✖ 关闭", null, delegate { Close(); });
             tray = new NotifyIcon();
             tray.Text = "AI 助手控制台";
@@ -363,6 +365,42 @@ namespace OfficeAI
         {
             if (!File.Exists(logFile)) { MessageBox.Show("暂无日志"); return; }
             Process.Start(new ProcessStartInfo { FileName = "notepad.exe", Arguments = "\"" + logFile + "\"", UseShellExecute = true });
+        }
+
+        /* ---------------- 关于 ---------------- */
+        void ShowAbout()
+        {
+            string version = "";
+            try
+            {
+                string pkg = Path.Combine(baseDir, "package.json");
+                if (File.Exists(pkg))
+                {
+                    Match m = Regex.Match(File.ReadAllText(pkg), "\"version\"\\s*:\\s*\"([^\"]+)\"");
+                    if (m.Success) version = m.Groups[1].Value.Trim();
+                }
+            }
+            catch { }
+            string developer = "", department = "";
+            try
+            {
+                // 隐私脱敏：开发者/部门信息不入仓库；运行目录可选 about-info.local.txt 本地注入（首行开发者、次行部门）
+                string infoFile = Path.Combine(baseDir, "about-info.local.txt");
+                if (File.Exists(infoFile))
+                {
+                    string[] lines = File.ReadAllLines(infoFile, Encoding.UTF8);
+                    if (lines.Length > 0) developer = lines[0].Trim();
+                    if (lines.Length > 1) department = lines[1].Trim();
+                }
+            }
+            catch { }
+            string detail = "";
+            if (developer != "") detail += "开发人员：" + developer + Environment.NewLine;
+            if (department != "") detail += "部门：" + department + Environment.NewLine;
+            MessageBox.Show(this,
+                "AI 助手 · Office 加载项控制台" + (version != "" ? "（版本 " + version + "）" : "") +
+                (detail != "" ? Environment.NewLine + Environment.NewLine + detail.TrimEnd() : ""),
+                "关于 AI 助手", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         void Log(string msg)

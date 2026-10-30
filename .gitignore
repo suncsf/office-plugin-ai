@@ -10,8 +10,9 @@ installer/output/
 installer/staging/
 *.exe
 
-# 本地隐私配置（开发人员/部门），不入库
+# 本地隐私配置（开发人员/部门），不入库（js=前端关于页，txt=控制台关于弹窗）
 about-info.local.js
+about-info.local.txt
 
 # 本地 AI 记忆归档（含对话原话/本机路径等隐私），不入库
 docs/memory/

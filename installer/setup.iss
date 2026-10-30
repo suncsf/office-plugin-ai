@@ -2,7 +2,7 @@
 ; 编译：ISCC.exe installer\setup.iss
 
 #define MyAppName "AI 助手（Office 加载项）"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.0.2"
 #define AddinId "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
 
 [Setup]
@@ -16,8 +16,9 @@ MinVersion=10.0
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=staging\app\app.ico
 OutputDir=output
-OutputBaseFilename=AI助手-Setup-{#MyAppVersion}
+OutputBaseFilename=Office-AI助手-Setup-{#MyAppVersion}
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\OfficeAIConsole.exe
 DisableProgramGroupPage=yes
@@ -46,8 +47,8 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Office\16.0\Wef\Developer"; ValueType: s
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "OfficeAI助手"; ValueData: """{app}\OfficeAIConsole.exe"" --min"; Tasks: autostart; Flags: uninsdeletevalue
 
 [Icons]
-Name: "{autoprograms}\AI 助手\AI 助手控制台"; Filename: "{app}\OfficeAIConsole.exe"; Comment: "启动/停止 AI 助手服务、安装证书、注册加载项"
-Name: "{autodesktop}\AI 助手控制台"; Filename: "{app}\OfficeAIConsole.exe"; Tasks: desktopicon
+Name: "{autoprograms}\AI 助手\AI 助手控制台"; Filename: "{app}\OfficeAIConsole.exe"; IconFilename: "{app}\app.ico"; Comment: "启动/停止 AI 助手服务、安装证书、注册加载项"
+Name: "{autodesktop}\AI 助手控制台"; Filename: "{app}\OfficeAIConsole.exe"; IconFilename: "{app}\app.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\OfficeAIConsole.exe"; Description: "启动 AI 助手控制台"; Flags: nowait postinstall skipifsilent

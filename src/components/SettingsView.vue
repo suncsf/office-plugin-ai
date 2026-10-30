@@ -164,6 +164,10 @@ onMounted(async () => {
           <div class="label">允许 AI 执行 Shell 命令（shell 工具：在本机运行命令行，关闭后 AI 不可见也不可执行）</div>
           <el-switch v-model="generalForm.enableShell" active-text="开启" inactive-text="关闭" />
         </div>
+        <div class="field">
+          <div class="label">编写 PPT 流程（仅编写 PPT 时生效；美化/修改已有页面仍会先读取现状）</div>
+          <el-checkbox v-model="generalForm.pptToolPrecheck">编写 PPT 前先试试工具是否可用（默认不勾选，直接开始编写）</el-checkbox>
+        </div>
         <el-button type="primary" @click="saveGeneral">保存通用设置</el-button>
       </el-card>
 

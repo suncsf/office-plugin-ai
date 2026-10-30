@@ -13,6 +13,7 @@ import https from "node:https";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { ChatOpenAI } from "@langchain/openai";
 
 import {
@@ -22,7 +23,7 @@ import {
   insertAttachment, getAttachment, listAttachments, conversationDir, newId, dataDir,
   insertMemory, listMemories, getMemory, updateMemory, deleteMemory,
 } from "./db.js";
-import { runAgentTurn } from "./agent.js";
+import { runAgentTurn, pptDisabledTools } from "./agent.js";
 import { runShellCommand } from "./shell.js";
 import { TOOLS } from "../shared/tools-catalog.js";
 import { parseDocument, attachmentOverview, attachmentRead, SUPPORTED_EXTS } from "./docparse.js";
@@ -32,6 +33,8 @@ import {
 } from "./image.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+const { version: APP_VERSION } = require("../package.json");
 const PORT = Number(process.env.PORT || 3000);
 const distDir = path.join(__dirname, "..", "dist");
 
@@ -45,7 +48,7 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
-    version: "1.0.0",
+    version: APP_VERSION,
     tools: {
       total: TOOLS.length,
       word: TOOLS.filter((t) => t.host === "word").length,
@@ -326,10 +329,13 @@ app.post("/api/chat", wrap(async (req, res) => {
 
     const settings = getSettings();
     // 从 LLM 绑定中剔除的工具：IE11 兼容版的 *_run_code（依赖 async/await，IE11 无法执行）、
-    // 设置里关闭的 shell（服务端执行器同样拒绝，双重防护）
+    // 设置里关闭的 shell（服务端执行器同样拒绝，双重防护）、
+    // 本机 PowerPointApi 版本不足的 ppt 工具（客户端启动时 isSetSupported 自动检测上报）
+    const pptCaps = caps.ppt && typeof caps.ppt === "object" && appType === "ppt" ? caps.ppt : null;
     const excludeToolNames = [
       ...(caps.legacy ? TOOLS.filter((t) => t.name.endsWith("_run_code")).map((t) => t.name) : []),
       ...(settings.general?.enableShell === false ? ["shell"] : []),
+      ...pptDisabledTools(pptCaps),
     ];
     const model = settings.models.find((m) => m.id === modelId) || settings.models[0];
     if (!model) {
@@ -441,6 +447,7 @@ app.post("/api/chat", wrap(async (req, res) => {
       general: settings.general,
       appType,
       memories,
+      caps: pptCaps,
       signal: controller.signal,
       excludeToolNames,
       onDelta: (kind, text) => send({ type: kind === "thinking" ? "thinking_delta" : "content_delta", text }),

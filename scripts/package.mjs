@@ -50,14 +50,18 @@ console.log("[4/5] 内置 Node 运行时");
 
 console.log("[5/5] 编译可视化控制台（csc.exe）");
 {
+  const ico = path.join(ROOT, "launcher", "app.ico");
+  if (!fs.existsSync(ico)) throw new Error("缺少 launcher/app.ico，请先运行 node scripts/gen-ico.mjs");
+  fs.copyFileSync(ico, path.join(APP, "app.ico"));
   const csc = "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe";
   execFileSync(csc, [
     "/nologo", "/target:winexe", "/platform:anycpu",
+    "/win32icon:" + ico,
     "/r:System.Windows.Forms.dll", "/r:System.Drawing.dll",
     `/out:${path.join(APP, "OfficeAIConsole.exe")}`,
     path.join(ROOT, "launcher", "OfficeAIConsole.cs"),
   ], { stdio: "inherit" });
-  log("OfficeAIConsole.exe");
+  log("OfficeAIConsole.exe（含 app.ico）");
 }
 
 let total = 0;

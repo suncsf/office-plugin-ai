@@ -157,6 +157,14 @@ console.log("\n[场景4] 系统提示词");
   const { buildSystemPrompt } = await import("../server/agent.js");
   const p = buildSystemPrompt("excel", { systemPrompt: "操作 {APP}" });
   check("{APP} 替换为 Excel", p.includes("Excel 工作簿"));
+  // PPT 编写流程开关（设置 general.pptToolPrecheck：默认直接编写，勾选后先试工具可用性）
+  const pptCaps = { host: "ppt", maxVersion: "1.10", capabilities: [], unsupported: [] };
+  const off = buildSystemPrompt("ppt", { systemPrompt: "x" }, [], pptCaps);
+  check("默认不勾选：注入「直接开始编写」流程", off.includes("直接开始编写") && !off.includes("先试试工具能不能用"), off.slice(-300));
+  const on = buildSystemPrompt("ppt", { systemPrompt: "x", pptToolPrecheck: true }, [], pptCaps);
+  check("勾选后：注入「先试试工具能不能用」流程", on.includes("先试试工具能不能用") && !on.includes("直接开始编写"), on.slice(-300));
+  check("设计指南两档都注入", off.includes("PPT 绘制与美化设计指南") && on.includes("PPT 绘制与美化设计指南"));
+  check("非 ppt 宿主不注入 PPT 流程", !buildSystemPrompt("word", { systemPrompt: "x", pptToolPrecheck: true }).includes("先试试工具能不能用"));
 }
 
 /* ---------- 场景 5：shell 工具（服务端直执行，不经任务窗格） ---------- */

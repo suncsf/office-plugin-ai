@@ -1,6 +1,6 @@
 {
   "name": "office-plugin-ai",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "type": "module",
   "author": "suncsf <https://github.com/suncsf>",
@@ -42,7 +42,9 @@
     "element-plus": "^2.9.11",
     "express": "^4.21.2",
     "fflate": "^0.8.3",
+    "html-to-image": "^1.11.13",
     "jimp": "^1.6.1",
+    "jspdf": "^4.2.1",
     "markdown-it": "^14.1.0",
     "vue": "^3.5.13"
   },

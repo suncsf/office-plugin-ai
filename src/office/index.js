@@ -8,7 +8,7 @@ import { store } from "../store";
 import { truncate } from "../utils";
 import * as wordExec from "./word";
 import * as excelExec from "./excel";
-import * as pptExec from "./ppt";
+import { registry as pptRegistry, detectPptCapabilities } from "./ppt";
 
 const registry = {
   "common.getOfficeContext": async () => {
@@ -17,12 +17,25 @@ const registry = {
       const d = Office.context.diagnostics;
       diag = { host: d?.host, version: d?.version, platform: d?.platform };
     } catch { /* noop */ }
-    return { appType: store.host, appName: HOST_NAMES[store.host] || "未知", diagnostics: diag };
+    const caps = store.caps?.ppt || null;
+    return {
+      appType: store.host,
+      appName: HOST_NAMES[store.host] || "未知",
+      diagnostics: diag,
+      pptCapabilities: caps
+        ? {
+            maxVersion: caps.maxVersion,
+            available: caps.capabilities?.filter((c) => c.ok).map((c) => c.label) || [],
+            unavailable: caps.capabilities?.filter((c) => !c.ok).map((c) => `${c.label}（需 ${c.api}+）`) || [],
+            notInOfficeJs: caps.unsupported || [],
+          }
+        : undefined,
+    };
   },
   "common.think": async (args) => `已记录思考：${String(args.thought || "").slice(0, 200)}`,
   ...wordExec.registry,
   ...excelExec.registry,
-  ...pptExec.registry,
+  ...pptRegistry,
 };
 
 function detectHost() {
@@ -44,6 +57,13 @@ export function initOffice() {
     Office.onReady(() => {
       store.host = detectHost();
       resolve({ host: store.host });
+      // PPT 宿主：启动时自动检测 PowerPointApi 能力（isSetSupported，不改动文档），
+      // 结果存入 store.caps.ppt，随每次对话上报服务端做工具过滤与提示词注入
+      if (store.host === "ppt") {
+        detectPptCapabilities()
+          .then((caps) => { store.caps.ppt = caps; })
+          .catch(() => { store.caps.ppt = null; });
+      }
     });
   });
 }

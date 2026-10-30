@@ -88,6 +88,8 @@ export const DEFAULT_GENERAL = {
   maxToolTurns: 25,
   maxToolResultChars: 6000,
   enableShell: true,
+  // 编写 PPT 前先试试工具是否可用（false=默认，直接编写；true=先调用轻量工具确认可用再编写）
+  pptToolPrecheck: false,
 };
 
 export const DEFAULT_SETTINGS = {

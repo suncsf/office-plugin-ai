@@ -1,6 +1,8 @@
 <script setup>
 import { ref, computed } from "vue";
+import { ElMessage } from "element-plus";
 import { renderMarkdown } from "../utils";
+import { copyText, copyElementAsImage, exportElementToPdf } from "../msg-export";
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -15,6 +17,41 @@ const isTool = computed(() => props.message.role === "tool");
 const isError = computed(() => !!props.message.meta?.error);
 
 const html = computed(() => (isUser.value ? "" : renderMarkdown(props.message.content)));
+
+/* 消息操作：复制文本 / 复制为图片 / 导出 PDF（仅正文，不含思考过程与工具调用） */
+const bodyEl = ref(null);
+const busy = ref("");
+
+async function onCopyText() {
+  if (await copyText(props.message.content)) ElMessage.success("已复制");
+  else ElMessage.error("复制失败");
+}
+
+async function onCopyImage() {
+  if (!bodyEl.value) return;
+  busy.value = "image";
+  try {
+    const how = await copyElementAsImage(bodyEl.value);
+    ElMessage.success(how === "clipboard" ? "已复制为图片" : "剪贴板不可用，已下载图片文件");
+  } catch (e) {
+    ElMessage.error("生成图片失败：" + e.message);
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function onExportPdf() {
+  if (!bodyEl.value) return;
+  busy.value = "pdf";
+  try {
+    const pages = await exportElementToPdf(bodyEl.value);
+    ElMessage.success(`已导出 PDF（${pages} 页）`);
+  } catch (e) {
+    ElMessage.error("导出 PDF 失败：" + e.message);
+  } finally {
+    busy.value = "";
+  }
+}
 
 function toggleArgs(id) {
   showArgs.value[id] = !showArgs.value[id];
@@ -54,6 +91,7 @@ function submitAsk(tc) {
 <template>
   <!-- 用户消息 -->
   <div v-if="isUser" class="row user-row">
+    <button v-if="message.content" class="user-copy" title="复制" @click="onCopyText">复制</button>
     <div class="bubble user">
       <div v-if="message.images?.length" class="imgs">
         <img v-for="(img, i) in message.images" :key="i" :src="img" alt="附件图片" />
@@ -90,7 +128,7 @@ function submitAsk(tc) {
       </div>
 
       <!-- 正文 markdown -->
-      <div v-if="message.content" class="md-body" v-html="html"></div>
+      <div v-if="message.content" ref="bodyEl" class="md-body" v-html="html"></div>
 
       <!-- 工具调用 -->
       <div v-for="tc in message.toolCalls || []" :key="tc.id" class="tool-card">
@@ -158,6 +196,13 @@ function submitAsk(tc) {
           </div>
         </template>
       </div>
+
+      <!-- 消息操作：复制 / 图片 / PDF -->
+      <div v-if="message.content" class="msg-actions">
+        <button class="act" :disabled="!!busy" @click="onCopyText">复制</button>
+        <button class="act" :disabled="!!busy" @click="onCopyImage">{{ busy === "image" ? "生成中…" : "图片" }}</button>
+        <button class="act" :disabled="!!busy" @click="onExportPdf">{{ busy === "pdf" ? "导出中…" : "PDF" }}</button>
+      </div>
     </div>
   </div>
 </template>
@@ -169,6 +214,29 @@ function submitAsk(tc) {
 }
 .user-row {
   justify-content: flex-end;
+  position: relative;
+}
+.user-copy {
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-right: 6px;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: #909399;
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+.user-row:hover .user-copy {
+  opacity: 1;
+}
+.user-copy:hover {
+  color: #2563eb;
 }
 .assistant-row {
   justify-content: flex-start;
@@ -200,6 +268,35 @@ function submitAsk(tc) {
 .bubble.error {
   border-color: #fca5a5;
   background: #fef2f2;
+}
+.msg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 6px;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.bubble.assistant:hover .msg-actions {
+  opacity: 1;
+}
+.act {
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #909399;
+  font-size: 12px;
+  cursor: pointer;
+}
+.act:hover {
+  color: #2563eb;
+  background: #f0f6ff;
+}
+.act:disabled {
+  color: #c0c4cc;
+  cursor: default;
+  background: transparent;
 }
 .imgs {
   display: flex;
