@@ -10,6 +10,7 @@
  */
 import { stripDataUrl } from "./dataurl";
 import { resolveStyleRequest, normalizeAlignment, BUILT_IN_STYLES } from "./style-map";
+import { resolveImageSource, saveWorkspaceFile, imageExtFromBase64 } from "./bridge";
 
 /* ---------------- 内部工具函数 ---------------- */
 
@@ -371,15 +372,128 @@ registry["word.insertHyperlink"] = async (args) => {
   });
 };
 
-registry["word.insertImage"] = async (args) => {
-  const b64 = stripDataUrl(args?.base64);
-  if (!b64) throw new Error("base64 不能为空");
+registry["word.insertImage"] = async (args, ctxInfo) => {
+  const b64 = await resolveImageSource(args, ctxInfo);
+  if (!b64) throw new Error("base64 / file 至少提供一项");
   return Word.run(async (ctx) => {
     const pic = ctx.document.getSelection().insertInlinePictureFromBase64(b64, "Replace");
     if (args?.width) pic.width = Number(args.width);
     if (args?.height) pic.height = Number(args.height);
     await ctx.sync();
     return { ok: true };
+  });
+};
+
+/* ---------------- 图片执行器（列表/提取/调整大小） ---------------- */
+
+const round1 = (v) => Math.round(Number(v) * 10) / 10;
+
+registry["word.listImages"] = async () => {
+  return Word.run(async (ctx) => {
+    const pics = ctx.document.body.inlinePictures;
+    pics.load("width,height");
+    await ctx.sync();
+    return {
+      count: pics.items.length,
+      images: pics.items.map((p, i) => ({ index: i, width: round1(p.width), height: round1(p.height) })),
+      note:
+        "index 按文档出现顺序（0 起始）。调整大小用 word_resize_image；导出为工作区文件用 word_get_image。" +
+        "浮动/衬于文字下方的图片不在列表中（Word JS API 限制）。",
+    };
+  });
+};
+
+registry["word.getImage"] = async (args, ctxInfo) => {
+  const index = Number(args?.index);
+  if (!Number.isInteger(index) || index < 0) throw new Error("index 必须是非负整数（来自 word_list_images）");
+  return Word.run(async (ctx) => {
+    const pics = ctx.document.body.inlinePictures;
+    pics.load("width,height");
+    await ctx.sync();
+    if (index >= pics.items.length) {
+      throw new Error(`图片 index ${index} 超出范围（共 ${pics.items.length} 张），先用 word_list_images 查看`);
+    }
+    const pic = pics.items[index];
+    if (typeof pic.getBase64ImageSrc !== "function") {
+      throw new Error("当前 Word JS API 不支持提取图片内容（getBase64ImageSrc），请更新 Office 版本");
+    }
+    const result = pic.getBase64ImageSrc();
+    await ctx.sync();
+    const b64 = stripDataUrl(result?.value || "");
+    if (!b64) throw new Error("未能读取图片数据");
+    const ext = imageExtFromBase64(b64) || "png";
+    const rel = `images/word_img${index + 1}_${Date.now().toString(36)}.${ext}`;
+    const saved = await saveWorkspaceFile(ctxInfo?.conversationId, rel, b64);
+    return {
+      ok: true,
+      index,
+      width: round1(pic.width),
+      height: round1(pic.height),
+      file: saved.file,
+      size: saved.size,
+      note: "已保存到对话工作区。可用 image_process 裁剪/缩放后，用 word_insert_image 的 file 参数插回文档。",
+    };
+  });
+};
+
+registry["word.resizeImage"] = async (args) => {
+  const target = args?.target === "selection" ? "selection" : "index";
+  const width = args?.width != null ? Number(args.width) : null;
+  const height = args?.height != null ? Number(args.height) : null;
+  const scale = args?.scale != null ? Number(args.scale) : null;
+  const checkSize = (name, v) => {
+    if (!Number.isFinite(v) || v <= 0 || v > 10000) throw new Error(`${name} 必须是 0~10000 的磅值`);
+  };
+  if (width != null) checkSize("width", width);
+  if (height != null) checkSize("height", height);
+  if (scale != null && (!Number.isFinite(scale) || scale <= 0 || scale > 20)) throw new Error("scale 必须是 0~20 的正数");
+  if (width == null && height == null && scale == null) throw new Error("至少提供 width / height / scale 之一");
+
+  return Word.run(async (ctx) => {
+    let pic;
+    if (target === "selection") {
+      const selPics = ctx.document.getSelection().inlinePictures;
+      selPics.load("width,height");
+      await ctx.sync();
+      if (!selPics.items.length) {
+        throw new Error("当前选区中没有图片：请点击选中目标图片后重试，或改用 target=index + index 定位");
+      }
+      pic = selPics.items[0];
+    } else {
+      const index = Number(args?.index);
+      if (!Number.isInteger(index) || index < 0) throw new Error("target=index 时必须提供 index（非负整数，来自 word_list_images）");
+      const pics = ctx.document.body.inlinePictures;
+      pics.load("width,height");
+      await ctx.sync();
+      if (index >= pics.items.length) {
+        throw new Error(`图片 index ${index} 超出范围（共 ${pics.items.length} 张），先用 word_list_images 查看`);
+      }
+      pic = pics.items[index];
+    }
+    pic.load("width,height");
+    await ctx.sync();
+    const oldW = Number(pic.width);
+    const oldH = Number(pic.height);
+    if (!oldW || !oldH) throw new Error("未能读取图片当前尺寸");
+    let newW = width;
+    let newH = height;
+    if (scale != null) {
+      newW = oldW * scale;
+      newH = oldH * scale;
+    }
+    // 只给一边 → 等比缩放
+    if (newW != null && newH == null) newH = oldH * (newW / oldW);
+    if (newH != null && newW == null) newW = oldW * (newH / oldH);
+    pic.width = newW;
+    pic.height = newH;
+    await ctx.sync();
+    return {
+      ok: true,
+      target,
+      oldSize: { width: round1(oldW), height: round1(oldH) },
+      newSize: { width: round1(newW), height: round1(newH) },
+      note: "只给宽或高时按原比例等比缩放；如需非等比请同时提供 width 与 height。",
+    };
   });
 };
 
@@ -750,6 +864,397 @@ registry["word.createStyle"] = async (args) => {
       action,
       style: pickStyleInfo(style),
       applyHint: `应用该样式：word_apply_style 且 style="${style.nameLocal}"`,
+    };
+  });
+};
+
+/* ---------------- 表格编辑（WordApi 1.3+） ---------------- */
+
+/** 校验非负整数参数 */
+function requireInt(v, label) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`${label} 必须是非负整数`);
+  return n;
+}
+
+/** 校验非空一维数组 */
+function parse1D(v, label) {
+  if (!Array.isArray(v) || !v.length) throw new Error(`${label} 必须是非空的一维数组`);
+  return v;
+}
+
+/** 校验非空二维数组 */
+function parse2D(v, label) {
+  if (!Array.isArray(v) || !v.length || !v.every((r) => Array.isArray(r))) {
+    throw new Error(`${label} 必须是非空的二维数组（行优先，如 [["a","b"],["c","d"]]）`);
+  }
+  return v;
+}
+
+/** 一维数组 → 定长字符串数组（不足补空，超出截断） */
+function padRow(v, len) {
+  const out = v.map((x) => String(x ?? "")).slice(0, len);
+  while (out.length < len) out.push("");
+  return out;
+}
+
+/** 校验 (row, col) 在表格 values 范围内 */
+function assertCellInRange(values, row, col) {
+  const rows = values ? values.length : 0;
+  if (row >= rows) throw new Error(`行号 ${row} 超出范围（表格共 ${rows} 行）`);
+  const cols = values[row] ? values[row].length : 0;
+  if (col >= cols) throw new Error(`列号 ${col} 超出范围（表格共 ${cols} 列）`);
+}
+
+/** 定位第 index 个表格并加载指定属性（index 0 起始，按文档出现顺序） */
+async function loadTableAt(ctx, index, select) {
+  const tables = ctx.document.body.tables;
+  tables.load(`items/${select}`);
+  await ctx.sync();
+  if (!Number.isInteger(index) || index < 0 || index >= tables.items.length) {
+    throw new Error(
+      `表格 index ${index} 超出范围（文档中共 ${tables.items.length} 个表格）` +
+        (tables.items.length ? "，可先用 word_get_tables 查看列表" : "，可先用 word_insert_table 插入表格")
+    );
+  }
+  return tables.items[index];
+}
+
+registry["word.getTables"] = async () => {
+  return Word.run(async (ctx) => {
+    const tables = ctx.document.body.tables;
+    tables.load("items/values,items/isUniform,items/nestingLevel,items/rowCount");
+    await ctx.sync();
+    if (!tables.items.length) {
+      return { total: 0, tables: [], note: "文档中没有表格，可先用 word_insert_table 插入" };
+    }
+    return {
+      total: tables.items.length,
+      tables: tables.items.map((t, i) => {
+        const firstRow = (t.values && t.values[0]) || [];
+        return {
+          index: i,
+          rows: t.rowCount,
+          cols: firstRow.length,
+          isUniform: t.isUniform,
+          nestingLevel: t.nestingLevel,
+          preview: firstRow.join(" | ").slice(0, 120),
+        };
+      }),
+      note: "index 按文档出现顺序（0 起始）；表格结构变化后请重新调用本工具",
+    };
+  });
+};
+
+registry["word.getTable"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  const maxRows = Math.max(1, Number(args?.max_rows) || 100);
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values,isUniform");
+    const values = t.values || [];
+    const out = {
+      index,
+      rowCount: values.length,
+      colCount: (values[0] && values[0].length) || 0,
+      isUniform: t.isUniform,
+      values: values.slice(0, maxRows),
+    };
+    const notes = [];
+    if (t.isUniform === false) notes.push("该表含合并单元格（非规整表），部分行可能长短不一，批量写入前请谨慎核对");
+    if (values.length > maxRows) notes.push(`…[仅返回前 ${maxRows} 行（共 ${values.length} 行），可用 max_rows 调整]`);
+    if (notes.length) out.note = notes.join(" ");
+    return out;
+  });
+};
+
+registry["word.setTableCell"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  const row = requireInt(args?.row, "row");
+  const col = requireInt(args?.col, "col");
+  const text = String(args?.text ?? "");
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values");
+    assertCellInRange(t.values, row, col);
+    t.getCell(row, col).value = text;
+    await ctx.sync();
+    return { ok: true, index, row, col, text };
+  });
+};
+
+registry["word.setTableCells"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  const startRow = Math.max(0, Number(args?.start_row) || 0);
+  const startCol = Math.max(0, Number(args?.start_col) || 0);
+  const data = parse2D(args?.data, "data");
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values");
+    const values = t.values || [];
+    const endRow = startRow + data.length - 1;
+    const endCol = startCol + Math.max(0, ...data.map((r) => r.length)) - 1;
+    if (endRow >= values.length) {
+      throw new Error(`写入区域越界：结束行 ${endRow} 超出表格行数（共 ${values.length} 行）；扩行请用 word_add_table_row`);
+    }
+    const cols = (values[0] && values[0].length) || 0;
+    if (endCol >= cols) {
+      throw new Error(`写入区域越界：结束列 ${endCol} 超出表格列数（共 ${cols} 列）；扩列请用 word_add_table_column`);
+    }
+    let updated = 0;
+    for (let r = 0; r < data.length; r++) {
+      for (let c = 0; c < data[r].length; c++) {
+        t.getCell(startRow + r, startCol + c).value = String(data[r][c] ?? "");
+        updated++;
+      }
+    }
+    await ctx.sync();
+    return { ok: true, index, updatedCells: updated, range: `行 ${startRow}-${endRow} × 列 ${startCol}-${endCol}` };
+  });
+};
+
+registry["word.addTableRow"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  const at = ["top", "bottom", "above", "below"].includes(args?.at) ? args.at : "bottom";
+  const data = args?.data == null ? null : parse1D(args.data, "data");
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values,rowCount");
+    const colCount = (t.values && t.values[0] ? t.values[0].length : 0) || 0;
+    // addRows/insertRows 的 values 为 string[][]（本次只插 1 行）
+    const rowValues = data ? [padRow(data, colCount)] : undefined;
+    let insertedAt;
+    if (at === "top") {
+      t.addRows("Start", 1, rowValues);
+      insertedAt = 0;
+    } else if (at === "bottom") {
+      t.addRows("End", 1, rowValues);
+      insertedAt = t.rowCount; // load 于插入前，即原行数
+    } else {
+      const ref = requireInt(args?.row_index, "at=above/below 时的 row_index");
+      if (ref >= t.rowCount) throw new Error(`参照行 ${ref} 超出范围（表格共 ${t.rowCount} 行）`);
+      t.getCell(ref, 0).insertRows(at === "above" ? "Before" : "After", 1, rowValues);
+      insertedAt = at === "above" ? ref : ref + 1;
+    }
+    await ctx.sync();
+    return { ok: true, index, at, insertedAt, note: `新行位于第 ${insertedAt} 行（0 起始）` };
+  });
+};
+
+registry["word.addTableColumn"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  const at = ["left", "right", "before", "after"].includes(args?.at) ? args.at : "right";
+  const data = args?.data == null ? null : parse1D(args.data, "data");
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values,rowCount");
+    const values = t.values || [];
+    const rowCount = values.length;
+    const colCount = (values[0] && values[0].length) || 0;
+    let insertedAt;
+    if (at === "left") {
+      t.addColumns("Start", 1);
+      insertedAt = 0;
+    } else if (at === "right") {
+      t.addColumns("End", 1);
+      insertedAt = colCount;
+    } else {
+      const ref = requireInt(args?.col_index, "at=before/after 时的 col_index");
+      if (ref >= colCount) throw new Error(`参照列 ${ref} 超出范围（表格共 ${colCount} 列）`);
+      t.getCell(0, ref).insertColumns(at === "before" ? "Before" : "After", 1);
+      insertedAt = at === "before" ? ref : ref + 1;
+    }
+    await ctx.sync();
+    let filled = 0;
+    if (data) {
+      for (let r = 0; r < rowCount; r++) {
+        if (data[r] == null) continue;
+        t.getCell(r, insertedAt).value = String(data[r]);
+        filled++;
+      }
+      await ctx.sync();
+    }
+    return { ok: true, index, at, insertedAt, filledCells: filled };
+  });
+};
+
+registry["word.deleteTableRow"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  const rowIndex = requireInt(args?.row_index, "row_index");
+  const count = Math.max(1, Number(args?.count) || 1);
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values,rowCount");
+    if (rowIndex >= t.rowCount) throw new Error(`行号 ${rowIndex} 超出范围（表格共 ${t.rowCount} 行）`);
+    if (t.rowCount - count < 1) {
+      throw new Error(`不能删除全部行（表格共 ${t.rowCount} 行）；要删除整个表格请用 word_delete_table`);
+    }
+    const deletedPreview = (t.values || [])
+      .slice(rowIndex, rowIndex + count)
+      .map((r) => (r || []).join(" | "))
+      .join("；")
+      .slice(0, 200);
+    t.deleteRows(rowIndex, count);
+    await ctx.sync();
+    return { ok: true, index, deletedRows: count, remainingRows: t.rowCount - count, deletedPreview };
+  });
+};
+
+registry["word.deleteTableColumn"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  const colIndex = requireInt(args?.col_index, "col_index");
+  const count = Math.max(1, Number(args?.count) || 1);
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values,rowCount");
+    const cols = (t.values && t.values[0] ? t.values[0].length : 0) || 0;
+    if (colIndex >= cols) throw new Error(`列号 ${colIndex} 超出范围（表格共 ${cols} 列）`);
+    if (cols - count < 1) {
+      throw new Error(`不能删除全部列（表格共 ${cols} 列）；要删除整个表格请用 word_delete_table`);
+    }
+    const deletedPreview = (t.values || [])
+      .slice(0, 10)
+      .map((r) => ((r || []).slice(colIndex, colIndex + count) || []).join(" | "))
+      .join("；")
+      .slice(0, 200);
+    t.deleteColumns(colIndex, count);
+    await ctx.sync();
+    return { ok: true, index, deletedColumns: count, remainingColumns: cols - count, deletedPreview };
+  });
+};
+
+registry["word.deleteTable"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values,rowCount");
+    const firstRowPreview = ((t.values && t.values[0]) || []).join(" | ").slice(0, 120);
+    const rows = t.rowCount;
+    t.delete();
+    await ctx.sync();
+    return {
+      ok: true,
+      deletedIndex: index,
+      deletedTable: { rows, firstRowPreview },
+      note: "表格已删除；其余表格的 index 已变化，请重新调用 word_get_tables",
+    };
+  });
+};
+
+registry["word.setTableFormat"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  const rowIndex = args?.row_index != null ? requireInt(args.row_index, "row_index") : null;
+  const colIndex = args?.col_index != null ? requireInt(args.col_index, "col_index") : null;
+  const style = args?.style ? String(args.style) : null;
+  if (style && (rowIndex !== null || colIndex !== null)) {
+    throw new Error("表格样式 style 仅支持整表设置，请不要与 row_index/col_index 同时使用");
+  }
+  const hAlign = args?.horizontal_alignment ? normalizeAlignment(args.horizontal_alignment) : null;
+  if (args?.horizontal_alignment && !hAlign) {
+    throw new Error(`无效的 horizontal_alignment: "${args.horizontal_alignment}"，合法值: Left / Centered / Right / Justified`);
+  }
+  let vAlign = null;
+  if (args?.vertical_alignment) {
+    const m = { top: "Top", center: "Center", middle: "Center", bottom: "Bottom" };
+    vAlign = m[String(args.vertical_alignment).trim().toLowerCase()] || null;
+    if (!vAlign) throw new Error(`无效的 vertical_alignment: "${args.vertical_alignment}"，合法值: Top / Center / Bottom`);
+  }
+  // shading_color 传 null 表示清除（Office.js 置空约定为字符串 "null"）
+  const shading =
+    args?.shading_color === undefined ? null : args?.shading_color === null ? "null" : normalizeColor(args.shading_color);
+  const bold = args?.bold != null ? !!args.bold : null;
+  const fontSize = args?.font_size != null ? Number(args.font_size) : null;
+  const fontColor = args?.font_color ? normalizeColor(args.font_color) : null;
+  const hasAny = style || hAlign || vAlign || shading !== null || bold !== null || fontSize != null || fontColor;
+  if (!hasAny) throw new Error("未提供任何格式属性");
+
+  const target =
+    rowIndex !== null && colIndex !== null ? "cell" : rowIndex !== null ? "row" : colIndex !== null ? "column" : "table";
+
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values,rowCount");
+    const warnings = [];
+    // 底纹单独同步：清除底纹（"null"）在部分版本不受支持，失败不应影响其他属性
+    if (shading !== null) {
+      try {
+        if (target === "table") {
+          t.shadingColor = shading;
+        } else {
+          const values = t.values || [];
+          applyToCells(t, target, rowIndex, colIndex, values, (cell) => {
+            cell.shadingColor = shading;
+          });
+        }
+        await ctx.sync();
+      } catch {
+        warnings.push("底纹设置未生效（当前版本可能不支持清除/设置底纹）");
+      }
+    }
+    if (target === "table") {
+      if (style) t.style = style;
+      if (hAlign) t.horizontalAlignment = hAlign;
+      if (vAlign) t.verticalAlignment = vAlign;
+      if (bold !== null) t.font.bold = bold;
+      if (fontSize != null) t.font.size = fontSize;
+      if (fontColor) t.font.color = fontColor;
+    } else {
+      applyToCells(t, target, rowIndex, colIndex, t.values || [], (cell) => {
+        if (hAlign) cell.horizontalAlignment = hAlign;
+        if (vAlign) cell.verticalAlignment = vAlign;
+        if (bold !== null) cell.body.font.bold = bold;
+        if (fontSize != null) cell.body.font.size = fontSize;
+        if (fontColor) cell.body.font.color = fontColor;
+      });
+    }
+    await ctx.sync();
+    const targetLabel =
+      target === "table"
+        ? "整表"
+        : target === "row"
+          ? `第 ${rowIndex} 行`
+          : target === "column"
+            ? `第 ${colIndex} 列`
+            : `单元格 (${rowIndex}, ${colIndex})`;
+    return { ok: true, index, appliedTo: targetLabel, ...(warnings.length ? { warnings } : {}) };
+  });
+};
+
+/** 按目标范围（row/column/cell）解析表格单元格代理并逐个应用 */
+function applyToCells(t, target, rowIndex, colIndex, values, apply) {
+  const rowCount = values.length;
+  const cols = (values[0] && values[0].length) || 0;
+  let cells;
+  if (target === "cell") {
+    assertCellInRange(values, rowIndex, colIndex);
+    cells = [t.getCell(rowIndex, colIndex)];
+  } else if (target === "row") {
+    if (rowIndex >= rowCount) throw new Error(`行号 ${rowIndex} 超出范围（表格共 ${rowCount} 行）`);
+    cells = Array.from({ length: cols }, (_, c) => t.getCell(rowIndex, c));
+  } else {
+    if (colIndex >= cols) throw new Error(`列号 ${colIndex} 超出范围（表格共 ${cols} 列）`);
+    cells = Array.from({ length: rowCount }, (_, r) => t.getCell(r, colIndex));
+  }
+  for (const cell of cells) apply(cell);
+}
+
+registry["word.mergeTableCells"] = async (args) => {
+  const index = requireInt(args?.table_index, "table_index");
+  const topRow = requireInt(args?.top_row, "top_row");
+  const firstCol = requireInt(args?.first_col, "first_col");
+  const bottomRow = requireInt(args?.bottom_row, "bottom_row");
+  const lastCol = requireInt(args?.last_col, "last_col");
+  if (bottomRow < topRow || lastCol < firstCol) {
+    throw new Error("合并范围无效：需满足 bottom_row ≥ top_row 且 last_col ≥ first_col");
+  }
+  return Word.run(async (ctx) => {
+    const t = await loadTableAt(ctx, index, "values");
+    const values = t.values || [];
+    if (topRow >= values.length) throw new Error(`行号 ${topRow} 超出范围（表格共 ${values.length} 行）`);
+    const cols = (values[0] && values[0].length) || 0;
+    if (lastCol >= cols) throw new Error(`列号 ${lastCol} 超出范围（表格共 ${cols} 列）`);
+    // mergeCells 为 WordApiDesktop 1.4（Office 2024/新版 365），旧版本做特性检测
+    if (typeof t.mergeCells !== "function") {
+      throw new Error("当前 Word 版本不支持合并单元格（需要 WordApiDesktop 1.4：Office 2024/新版 365 桌面版支持）");
+    }
+    t.mergeCells(topRow, firstCol, bottomRow, lastCol);
+    await ctx.sync();
+    return {
+      ok: true,
+      index,
+      mergedRange: { topRow, firstCol, bottomRow, lastCol },
+      note: "合并后表格结构已变化，建议重新 word_get_table 确认",
     };
   });
 };

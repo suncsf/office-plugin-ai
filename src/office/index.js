@@ -71,7 +71,8 @@ export async function executeTool(name, args = {}) {
   }
 
   try {
-    const out = await registry[def.executor](args);
+    // 注入对话上下文：工作区文件桥接（word_get_image / file 参数插图）需要 conversationId
+    const out = await registry[def.executor](args, { conversationId: store.conversationId || null });
     const content = typeof out === "string" ? out : JSON.stringify(out, null, 0);
     return { content: truncate(content, maxChars), isError: false };
   } catch (err) {

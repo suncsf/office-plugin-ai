@@ -1,6 +1,6 @@
 /**
  * SQLite 持久化（better-sqlite3）
- * 表：conversations 对话 | messages 消息 | settings 配置（模型列表、通用设置）
+ * 表：conversations 对话 | messages 消息 | settings 配置（模型列表、通用设置） | attachments 附件 | memories 长期记忆
  */
 import Database from "better-sqlite3";
 import path from "node:path";
@@ -16,6 +16,7 @@ const dataDir = process.env.OFFICE_AI_DATA_DIR
 fs.mkdirSync(dataDir, { recursive: true });
 
 export const db = new Database(path.join(dataDir, "app.db"));
+export { dataDir };
 db.pragma("journal_mode = WAL");
 
 db.exec(`
@@ -54,6 +55,15 @@ CREATE TABLE IF NOT EXISTS attachments (
   created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_conv ON attachments(conversation_id, id);
+CREATE TABLE IF NOT EXISTS memories (
+  id         TEXT PRIMARY KEY,
+  host       TEXT NOT NULL,           -- word | excel | ppt | common
+  title      TEXT NOT NULL,           -- 标题（内容摘要）
+  content    TEXT NOT NULL,           -- 内容（模板格式、公式、规范等）
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memories_host ON memories(host, updated_at);
 `);
 
 /* ---------------- 工作区（按对话 id 建文件夹，对话内产生的文件都存放在此） ---------------- */
@@ -72,10 +82,12 @@ export const DEFAULT_GENERAL = {
 2. 破坏性操作（删除段落/形状、删除行/列/工作表/幻灯片、批量替换）前，必须用 ask_user 工具向用户确认。
 3. 只调用与 {APP} 匹配的工具；跨应用工具会失败。复杂操作前可先用 think 工具列出计划。
 4. 工具结果出现"[已截断]"时，说明内容超长，请改用更小范围的工具（如按段落/按区域读取）。
-5. 完成操作后，用简洁的中文 Markdown 向用户汇报做了什么、结果如何；列出关键数据时使用表格或代码块。`,
+5. 完成操作后，用简洁的中文 Markdown 向用户汇报做了什么、结果如何；列出关键数据时使用表格或代码块。
+6. 用户要求「记住」某套模板、公式、规范，或总结出可复用的标准格式且用户认可时，用 memory_save 工具存入长期记忆（按 word/excel/ppt/common 分类）；复用前可用 memory_list 查看已有记忆，避免重复保存。`,
   temperature: 0.7,
   maxToolTurns: 25,
   maxToolResultChars: 6000,
+  enableShell: true,
 };
 
 export const DEFAULT_SETTINGS = {
@@ -129,9 +141,10 @@ export function saveSettings({ models, general }) {
     ).run(JSON.stringify(models));
   }
   if (general !== undefined) {
+    // 与已存 general 合并：旧客户端（未带上新增字段）保存时不会把新字段重置回默认值
     db.prepare(
       "INSERT INTO settings (key, value) VALUES ('general', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-    ).run(JSON.stringify({ ...DEFAULT_GENERAL, ...(general || {}) }));
+    ).run(JSON.stringify({ ...getSettings().general, ...(general || {}) }));
   }
   return getSettings();
 }
@@ -254,6 +267,7 @@ const toClientAttachment = (r) => ({
   name: r.name,
   ext: r.ext || null,
   size: r.size,
+  path: r.path,
   createdAt: r.created_at,
 });
 
@@ -277,3 +291,79 @@ export function listAttachments(convId) {
 }
 
 export { safeParse };
+
+/* ---------------- memories（长期记忆） ---------------- */
+
+const MEMORY_HOSTS = ["word", "excel", "ppt", "common"];
+
+const toClientMemory = (r) => ({
+  id: r.id,
+  host: r.host,
+  title: r.title,
+  content: r.content,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+});
+
+function normalizeMemoryHost(host) {
+  if (!MEMORY_HOSTS.includes(host)) throw new Error("记忆分类必须是 word / excel / ppt / common");
+  return host;
+}
+
+export function insertMemory({ host, title, content }) {
+  const now = Date.now();
+  const mem = {
+    id: newId(),
+    host: normalizeMemoryHost(host),
+    title: String(title || "").trim().slice(0, 100),
+    content: String(content || "").trim(),
+    created_at: now,
+    updated_at: now,
+  };
+  if (!mem.title) throw new Error("记忆标题不能为空");
+  if (!mem.content) throw new Error("记忆内容不能为空");
+  db.prepare(
+    "INSERT INTO memories (id, host, title, content, created_at, updated_at) VALUES (@id, @host, @title, @content, @created_at, @updated_at)"
+  ).run(mem);
+  return toClientMemory(mem);
+}
+
+/** host 传 "all" 或缺省时返回全部分类 */
+export function listMemories(host) {
+  if (host && host !== "all") {
+    return db
+      .prepare("SELECT * FROM memories WHERE host = ? ORDER BY updated_at DESC")
+      .all(host)
+      .map(toClientMemory);
+  }
+  return db
+    .prepare("SELECT * FROM memories ORDER BY updated_at DESC")
+    .all()
+    .map(toClientMemory);
+}
+
+export function getMemory(id) {
+  const row = db.prepare("SELECT * FROM memories WHERE id = ?").get(id);
+  return row ? toClientMemory(row) : null;
+}
+
+export function updateMemory(id, { host, title, content } = {}) {
+  const mem = db.prepare("SELECT * FROM memories WHERE id = ?").get(id);
+  if (!mem) return null;
+  const next = {
+    host: host !== undefined ? normalizeMemoryHost(host) : mem.host,
+    title: title !== undefined ? String(title).trim().slice(0, 100) : mem.title,
+    content: content !== undefined ? String(content).trim() : mem.content,
+  };
+  if (!next.title) throw new Error("记忆标题不能为空");
+  if (!next.content) throw new Error("记忆内容不能为空");
+  db.prepare("UPDATE memories SET host = ?, title = ?, content = ?, updated_at = ? WHERE id = ?").run(
+    next.host, next.title, next.content, Date.now(), id
+  );
+  return getMemory(id);
+}
+
+export function deleteMemory(id) {
+  const info = db.prepare("DELETE FROM memories WHERE id = ?").run(id);
+  return info.changes > 0;
+}

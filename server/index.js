@@ -19,11 +19,17 @@ import {
   getSettings, saveSettings,
   createConversation, listConversations, getConversation, updateConversation, deleteConversation,
   insertMessage, getMessages,
-  insertAttachment, getAttachment, listAttachments, conversationDir, newId,
+  insertAttachment, getAttachment, listAttachments, conversationDir, newId, dataDir,
+  insertMemory, listMemories, getMemory, updateMemory, deleteMemory,
 } from "./db.js";
 import { runAgentTurn } from "./agent.js";
+import { runShellCommand } from "./shell.js";
 import { TOOLS } from "../shared/tools-catalog.js";
 import { parseDocument, attachmentOverview, attachmentRead, SUPPORTED_EXTS } from "./docparse.js";
+import {
+  resolveWorkspacePath, sniffImageExt, processImage,
+  IMAGE_EXTS, IMAGE_FILE_EXTS, MAX_IMAGE_MB,
+} from "./image.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -103,6 +109,86 @@ app.delete("/api/conversations/:id", wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/* ---------------- 长期记忆 ---------------- */
+
+const MEMORY_HOSTS = ["word", "excel", "ppt", "common"];
+
+app.get("/api/memories", (req, res) => {
+  const host = req.query.host;
+  res.json(listMemories(MEMORY_HOSTS.includes(host) ? host : "all"));
+});
+
+app.post("/api/memories", wrap(async (req, res) => {
+  res.json(insertMemory(req.body || {}));
+}));
+
+app.patch("/api/memories/:id", wrap(async (req, res) => {
+  const mem = updateMemory(req.params.id, req.body || {});
+  if (!mem) return res.status(404).json({ error: "记忆不存在" });
+  res.json(mem);
+}));
+
+app.delete("/api/memories/:id", wrap(async (req, res) => {
+  if (!deleteMemory(req.params.id)) return res.status(404).json({ error: "记忆不存在" });
+  res.json({ ok: true });
+}));
+
+/* ---------------- 对话工作区文件（图片桥接） ----------------
+ * 客户端执行器（任务窗格）与服务端图片工具之间的文件桥：
+ *  - GET  /api/workspace/file?conv=&path=  读取工作区图片（返回 base64，供插入文档）
+ *  - POST /api/workspace/file              保存图片到工作区（文档提取图、贴图等）
+ * 路径严格限制在对话工作区内（resolveWorkspacePath 防越界），图片内容不经过 LLM 上下文。
+ */
+
+app.get("/api/workspace/file", wrap(async (req, res) => {
+  const conv = getConversation(String(req.query.conv || ""));
+  if (!conv) return res.status(404).json({ error: "对话不存在" });
+  let resolved;
+  try {
+    resolved = resolveWorkspacePath(conversationDir(conv.id), String(req.query.path || ""));
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || String(e) });
+  }
+  if (!fs.existsSync(resolved.abs) || !fs.statSync(resolved.abs).isFile()) {
+    return res.status(404).json({ error: `文件不存在：${resolved.rel}` });
+  }
+  const buf = fs.readFileSync(resolved.abs);
+  if (buf.length > MAX_IMAGE_MB * 1024 * 1024) {
+    return res.status(413).json({ error: `文件过大（>${MAX_IMAGE_MB}MB）：${resolved.rel}` });
+  }
+  const ext = sniffImageExt(buf);
+  if (!ext) {
+    return res.status(415).json({ error: `不是可识别的图片文件（支持 ${IMAGE_FILE_EXTS.join(" / ")}）：${resolved.rel}` });
+  }
+  res.json({ name: path.basename(resolved.rel), file: resolved.rel, ext, size: buf.length, base64: buf.toString("base64") });
+}));
+
+app.post("/api/workspace/file", wrap(async (req, res) => {
+  const body = req.body || {};
+  const conv = getConversation(String(body.conv || ""));
+  if (!conv) return res.status(404).json({ error: "对话不存在" });
+  const b64 = String(body.base64 || "");
+  if (!b64) return res.status(400).json({ error: "缺少 base64 内容" });
+  const buf = Buffer.from(b64, "base64");
+  if (!buf.length) return res.status(400).json({ error: "base64 内容无效" });
+  if (buf.length > MAX_IMAGE_MB * 1024 * 1024) {
+    return res.status(413).json({ error: `文件过大（>${MAX_IMAGE_MB}MB）` });
+  }
+  const ext = sniffImageExt(buf);
+  if (!ext) {
+    return res.status(415).json({ error: `不是可识别的图片文件（支持 ${IMAGE_FILE_EXTS.join(" / ")}）` });
+  }
+  let resolved;
+  try {
+    resolved = resolveWorkspacePath(conversationDir(conv.id), String(body.path || ""));
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || String(e) });
+  }
+  fs.mkdirSync(path.dirname(resolved.abs), { recursive: true });
+  fs.writeFileSync(resolved.abs, buf);
+  res.json({ ok: true, file: resolved.rel, ext, size: buf.length });
+}));
+
 /* ---------------- AI 对话（SSE + 客户端工具中断协议） ---------------- */
 
 const pendingResolves = new Map(); // turnId -> { toolCalls, resolve, timer }
@@ -116,6 +202,7 @@ const parsedCache = new Map(); // attachmentId -> 解析结果（LRU，容量 24
 
 function getParsedDoc(att) {
   if (parsedCache.has(att.id)) return parsedCache.get(att.id);
+  if (!att?.path) throw new Error(`附件记录缺少本地路径（path），无法读取文件：${att?.name || att?.id}`);
   const parsed = parseDocument(att.name, fs.readFileSync(att.path));
   if (parsedCache.size >= 24) parsedCache.delete(parsedCache.keys().next().value);
   parsedCache.set(att.id, parsed);
@@ -130,8 +217,8 @@ function safeOverview(att) {
   }
 }
 
-/** 服务端工具执行器（绑定对话：附件按对话隔离） */
-function attachmentExecutor(convId) {
+/** 服务端工具执行器（绑定对话：附件按对话隔离；shell 受通用设置开关控制；记忆为全局共享；图片处理限工作区内） */
+function serverToolExecutor(convId, settings) {
   return async (name, args) => {
     if (name === "attachment_list") {
       const atts = listAttachments(convId);
@@ -142,14 +229,51 @@ function attachmentExecutor(convId) {
           name: a.name,
           size: a.size,
           ext: a.ext,
-          overview: safeOverview(a),
+          overview: IMAGE_FILE_EXTS.includes(a.ext)
+            ? { type: "image", file: `attachments/${path.basename(a.path || "")}`, note: "图片文件（不解析内容）。可用 word/ppt/excel 插入图片工具的 file 参数插入文档，或先用 image_process 裁剪/缩放" }
+            : safeOverview(a),
         })),
       };
     }
     if (name === "attachment_read") {
       const att = getAttachment(String(args?.id || ""));
       if (!att || att.conversationId !== convId) throw new Error(`附件不存在或不属于当前对话：${args?.id}`);
+      if (IMAGE_FILE_EXTS.includes(att.ext)) {
+        throw new Error(`图片附件不解析文本内容（${att.name}）。请用插入图片工具的 file 参数引用：attachments/${path.basename(att.path || "")}（可先用 image_process 裁剪/缩放）`);
+      }
       return attachmentRead(getParsedDoc(att), args || {});
+    }
+    if (name === "image_process") {
+      return processImage(args || {}, { convDir: conversationDir(convId) });
+    }
+    if (name === "shell") {
+      return runShellCommand(args || {}, {
+        defaultCwd: conversationDir(convId),
+        enabled: settings?.general?.enableShell !== false,
+      });
+    }
+    if (name === "memory_save") {
+      const mem = insertMemory(args || {});
+      return { ok: true, id: mem.id, message: `已记住（${mem.host === "common" ? "通用" : mem.host}）：${mem.title}` };
+    }
+    if (name === "memory_list") {
+      const host = MEMORY_HOSTS.includes(args?.host) ? args.host : "all";
+      let items = listMemories(host);
+      const kw = String(args?.keyword || "").trim().toLowerCase();
+      if (kw) items = items.filter((m) => (m.title || "").toLowerCase().includes(kw));
+      return {
+        count: items.length,
+        memories: items.map((m) => ({ id: m.id, host: m.host, title: m.title, content: m.content, updatedAt: m.updatedAt })),
+      };
+    }
+    if (name === "memory_update") {
+      const mem = updateMemory(String(args?.id || ""), args || {});
+      if (!mem) throw new Error(`记忆不存在：${args?.id}`);
+      return { ok: true, id: mem.id, message: `已更新记忆：${mem.title}` };
+    }
+    if (name === "memory_delete") {
+      if (!deleteMemory(String(args?.id || ""))) throw new Error(`记忆不存在：${args?.id}`);
+      return { ok: true, message: "已删除该条记忆" };
     }
     throw new Error(`未知的服务端工具：${name}`);
   };
@@ -169,11 +293,8 @@ app.post("/api/chat", wrap(async (req, res) => {
   const images = Array.isArray(body.images) ? body.images : [];
   const appType = ["word", "excel", "ppt", "unknown"].includes(body.appType) ? body.appType : "unknown";
   const modelId = body.modelId || null;
-  // 客户端能力声明：IE11 兼容版（caps.legacy）剔除 *_run_code（依赖 async/await，IE11 无法执行）
+  // 客户端能力声明：IE11 兼容版（caps.legacy）
   const caps = body.caps && typeof body.caps === "object" ? body.caps : {};
-  const excludeToolNames = caps.legacy
-    ? TOOLS.filter((t) => t.name.endsWith("_run_code")).map((t) => t.name)
-    : null;
 
   // SSE 头
   res.writeHead(200, {
@@ -204,6 +325,12 @@ app.post("/api/chat", wrap(async (req, res) => {
     if (!conv) conv = createConversation();
 
     const settings = getSettings();
+    // 从 LLM 绑定中剔除的工具：IE11 兼容版的 *_run_code（依赖 async/await，IE11 无法执行）、
+    // 设置里关闭的 shell（服务端执行器同样拒绝，双重防护）
+    const excludeToolNames = [
+      ...(caps.legacy ? TOOLS.filter((t) => t.name.endsWith("_run_code")).map((t) => t.name) : []),
+      ...(settings.general?.enableShell === false ? ["shell"] : []),
+    ];
     const model = settings.models.find((m) => m.id === modelId) || settings.models[0];
     if (!model) {
       send({ type: "error", message: "尚未配置 AI 模型，请到「设置 → 模型管理」添加（需 OpenAI 兼容接口）" });
@@ -229,8 +356,9 @@ app.post("/api/chat", wrap(async (req, res) => {
         const buf = Buffer.from(b64, "base64");
         if (!buf.length) continue;
         const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
-        if (!SUPPORTED_EXTS.includes(ext)) {
-          throw new Error(`不支持的附件格式：${name}（支持 ${SUPPORTED_EXTS.join(" / ")}）`);
+        // 附件白名单：文档类（可解析）+ 图片类（存盘不解析，供插入图片工具引用）
+        if (!SUPPORTED_EXTS.includes(ext) && !IMAGE_FILE_EXTS.includes(ext)) {
+          throw new Error(`不支持的附件格式：${name}（支持 ${SUPPORTED_EXTS.concat(IMAGE_FILE_EXTS).join(" / ")}）`);
         }
         if (buf.length > MAX_ATTACHMENT_MB * 1024 * 1024) {
           throw new Error(`附件过大（>${MAX_ATTACHMENT_MB}MB）：${name}`);
@@ -249,11 +377,37 @@ app.post("/api/chat", wrap(async (req, res) => {
       return;
     }
 
+    // 贴图落盘：用户随消息发的图片同时存入工作区 images/，AI 可用 file 参数直接插入文档
+    const imageFilesMeta = [];
+    try {
+      for (let i = 0; i < images.length; i++) {
+        const dataUrl = String(images[i] || "");
+        const b64 = dataUrl.includes(",") ? dataUrl.slice(dataUrl.indexOf(",") + 1) : "";
+        if (!b64) continue;
+        const buf = Buffer.from(b64, "base64");
+        if (!buf.length || buf.length > MAX_IMAGE_MB * 1024 * 1024) continue;
+        const ext = sniffImageExt(buf);
+        if (!ext) continue;
+        const rel = `images/user_${Date.now().toString(36)}_${i + 1}.${ext}`;
+        const { abs } = resolveWorkspacePath(conversationDir(conv.id), rel);
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, buf);
+        imageFilesMeta.push({ file: rel, size: buf.length, ext });
+      }
+    } catch (e) {
+      console.warn("[贴图落盘失败]", e?.message || e); // 落盘失败不影响对话
+    }
+
     const userMsg = insertMessage(conv.id, {
       role: "user",
       content,
       images,
-      meta: attachmentsMeta.length ? { attachments: attachmentsMeta } : undefined,
+      meta: attachmentsMeta.length || imageFilesMeta.length
+        ? {
+            ...(attachmentsMeta.length ? { attachments: attachmentsMeta } : {}),
+            ...(imageFilesMeta.length ? { imageFiles: imageFilesMeta } : {}),
+          }
+        : undefined,
     });
     // 自动用首条用户消息生成标题
     if (!conv.title || conv.title === "新对话") {
@@ -274,12 +428,19 @@ app.post("/api/chat", wrap(async (req, res) => {
     const historyRows = getMessages(conv.id);
     let ctxUsed = conv.ctxUsed || 0;
 
+    // 长期记忆注入：当前应用 + 通用分类的记忆进入系统提示词（其余分类可用 memory_list 工具查询）
+    const memories = [
+      ...listMemories(appType),
+      ...listMemories("common"),
+    ];
+
     await runAgentTurn({
       turnId,
       historyRows,
       model,
       general: settings.general,
       appType,
+      memories,
       signal: controller.signal,
       excludeToolNames,
       onDelta: (kind, text) => send({ type: kind === "thinking" ? "thinking_delta" : "content_delta", text }),
@@ -287,7 +448,7 @@ app.post("/api/chat", wrap(async (req, res) => {
         const row = insertMessage(conv.id, m);
         send({ type: "message", message: row });
       },
-      serverToolExecutor: attachmentExecutor(conv.id),
+      serverToolExecutor: serverToolExecutor(conv.id, settings),
       onInterrupt: (toolCalls) => {
         send({ type: "interrupt", turnId, toolCalls });
         const st = { toolCalls, resolve: null, timer: null };
@@ -406,7 +567,7 @@ async function start() {
     console.log(`  任务窗格: ${proto}://localhost:${PORT}/taskpane.html`);
     console.log(`  健康检查: ${proto}://localhost:${PORT}/api/health`);
     console.log(`  工具数量: Word ${TOOLS.filter((t) => t.host === "word").length} 个 | Excel ${TOOLS.filter((t) => t.host === "excel").length} 个 | PPT ${TOOLS.filter((t) => t.host === "ppt").length} 个 | 通用 ${TOOLS.filter((t) => t.host === "common").length} 个`);
-    console.log(`  数据文件: ${path.join(__dirname, "..", "data", "app.db")}`);
+    console.log(`  数据文件: ${path.join(dataDir, "app.db")}`);
     console.log("");
   });
 }

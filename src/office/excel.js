@@ -1,7 +1,8 @@
 /**
  * Excel 执行器（Office.js Excel API）
  */
-import { stripDataUrl } from "./dataurl";
+import { stripDataUrl } from "./dataurl.js";
+import { resolveImageSource } from "./bridge.js";
 
 /* ---------------- 内部工具函数 ---------------- */
 
@@ -41,10 +42,24 @@ function normalizeColor(c) {
   return s.startsWith("#") || s.startsWith("rgb") ? s : `#${s}`;
 }
 
-/** 把任意输入规整为 rows×cols 的二维数组 */
-function normalize2D(values, rows, cols) {
+/** 字符串形态的 JSON 数组自动解析（模型常把二维数组序列化成字符串传入） */
+function tryParseJsonArray(v) {
+  if (typeof v !== "string") return v;
+  const s = v.trim();
+  if (!s.startsWith("[") && !s.startsWith("{")) return v;
+  try {
+    const p = JSON.parse(s);
+    return Array.isArray(p) ? p : v;
+  } catch {
+    return v;
+  }
+}
+
+/** 把任意输入规整为 rows×cols 的二维数组（导出仅供测试） */
+export function normalize2D(values, rows, cols) {
   const need = `${rows} 行 × ${cols} 列`;
   if (values === null || values === undefined) throw new Error("values 不能为空");
+  values = tryParseJsonArray(values);
   if (!Array.isArray(values)) {
     return new Array(rows).fill(null).map(() => new Array(cols).fill(values));
   }
@@ -63,6 +78,51 @@ function normalize2D(values, rows, cols) {
     return new Array(rows).fill(null).map(() => values.map((v) => (v === undefined || v === null ? "" : v)));
   }
   throw new Error(`一维数组长度 (${values.length}) 与区域 (${need}) 不一致，请使用与区域等尺寸的二维数组`);
+}
+
+/** 解析 headers 参数：数组 / JSON 字符串 / 逗号分隔字符串 → 字符串数组 */
+function parseHeaders(headers) {
+  if (headers === null || headers === undefined || headers === "") return null;
+  let h = headers;
+  if (typeof h === "string") {
+    const s = h.trim();
+    if (s.startsWith("[")) {
+      try { h = JSON.parse(s); } catch { /* fallthrough */ }
+    }
+    if (typeof h === "string") h = s.split(",").map((x) => x.trim()).filter(Boolean);
+  }
+  if (!Array.isArray(h) || !h.length) throw new Error("headers 必须是非空数组（或逗号分隔的表头字符串）");
+  return h.map((x) => (x === null || x === undefined ? "" : typeof x === "object" ? JSON.stringify(x) : String(x)));
+}
+
+/**
+ * 把 JSON 数据（对象数组或二维数组）规整为含表头的二维网格：
+ *  - 对象数组：键名（首次出现顺序，并集）自动作表头行；可传 headers 指定列顺序/子集
+ *  - 二维数组：原样使用；传 headers 则在首行前插入表头
+ * 单元格值：null/undefined → ""；嵌套对象/数组 → JSON 字符串；其余原样
+ */
+export function jsonToGrid(data, headers) {
+  let rows = tryParseJsonArray(data);
+  if (rows && typeof rows === "object" && !Array.isArray(rows)) rows = [rows]; // 单个对象 → 一行
+  if (!Array.isArray(rows) || !rows.length) throw new Error("data 必须是非空数组（对象数组或二维数组）");
+  const cell = (v) => (v === null || v === undefined ? "" : typeof v === "object" ? JSON.stringify(v) : v);
+  const allObjects = rows.every((r) => r && typeof r === "object" && !Array.isArray(r));
+  const allArrays = rows.every((r) => Array.isArray(r));
+  if (allObjects) {
+    const keys = [];
+    for (const r of rows) for (const k of Object.keys(r)) if (!keys.includes(k)) keys.push(k);
+    const hdr = parseHeaders(headers) || keys;
+    return [hdr, ...rows.map((r) => hdr.map((k) => (Object.prototype.hasOwnProperty.call(r, k) ? cell(r[k]) : "")))];
+  }
+  if (allArrays) {
+    const body = rows.map((r) => r.map(cell));
+    const hdr = parseHeaders(headers);
+    if (!hdr) return body;
+    const width = Math.max(hdr.length, ...body.map((r) => r.length));
+    const pad = (r) => { const o = r.slice(); while (o.length < width) o.push(""); return o; };
+    return [pad(hdr), ...body.map(pad)];
+  }
+  throw new Error("data 元素必须是对象或数组（不能混用）");
 }
 
 function slicePreview(values, maxRows = 30, maxCols = 30) {
@@ -232,6 +292,38 @@ registry["excel.setRangeValues"] = async (args) => {
     rng.values = values;
     await ctx.sync();
     return { ok: true, address, rows: rng.rowCount, cols: rng.columnCount };
+  });
+};
+
+registry["excel.writeJson"] = async (args) => {
+  const grid = jsonToGrid(args?.data, args?.headers).map((r) => r.slice());
+  const nRows = grid.length;
+  const nCols = Math.max(...grid.map((r) => r.length));
+  for (const r of grid) while (r.length < nCols) r.push(""); // 补齐等宽
+  const start = String(args?.start_cell || "A1").trim() || "A1";
+  const pos = parseCellRef(start);
+  if (!pos) throw new Error(`start_cell 无效：${start}（应为 A1 这样的单元格地址）`);
+  return Excel.run(async (ctx) => {
+    const sheet = getSheet(ctx, args?.sheet);
+    const rng = sheet.getRangeByIndexes(pos.row, pos.col, nRows, nCols);
+    rng.values = grid;
+    await ctx.sync();
+    rng.load("address");
+    await ctx.sync();
+    const address = rng.address;
+    const autoFit = args?.auto_fit !== false;
+    if (autoFit) {
+      rng.format.autofitColumns();
+      await ctx.sync();
+    }
+    return {
+      ok: true,
+      address,
+      rows: nRows,
+      cols: nCols,
+      preview: grid.slice(0, 3).map((r) => r.slice(0, 6)),
+      note: `已写入 ${nRows} 行 ${nCols} 列${autoFit ? "，列宽已自适应" : ""}`,
+    };
   });
 };
 
@@ -501,6 +593,126 @@ registry["excel.addChart"] = async (args) => {
     chart.load("id,name");
     await ctx.sync();
     return { ok: true, chartId: chart.id, chartName: chart.name, chartType };
+  });
+};
+
+/* ---------------- 图片执行器（插入/列表/调整大小） ---------------- */
+
+function hasFn(obj, name) {
+  return !!obj && typeof obj[name] === "function";
+}
+
+const round1 = (v) => Math.round(Number(v) * 10) / 10;
+
+registry["excel.insertImage"] = async (args, ctxInfo) => {
+  const b64 = await resolveImageSource(args, ctxInfo);
+  if (!b64) throw new Error("base64 / file 至少提供一项");
+  return Excel.run(async (ctx) => {
+    const sheet = getSheet(ctx, args?.sheet);
+    const shapes = sheet.shapes;
+    if (!hasFn(shapes, "addImageFromBase64")) {
+      throw new Error("当前 Excel JS API 不支持插入图片（shapes.addImageFromBase64 需要 ExcelApi 1.9+，Office 2021/2024 支持）");
+    }
+    let left = args?.left != null ? Number(args.left) : null;
+    let top = args?.top != null ? Number(args.top) : null;
+    if (args?.anchor) {
+      if (!parseCellRef(args.anchor)) throw new Error(`anchor 无效：${args.anchor}（应为如 E2 的单元格地址）`);
+      const range = sheet.getRange(args.anchor);
+      range.load("left,top");
+      await ctx.sync();
+      left = range.left;
+      top = range.top;
+    }
+    if (left == null) left = 20;
+    if (top == null) top = 20;
+    const options = { left, top };
+    if (args?.width != null) options.width = Number(args.width);
+    if (args?.height != null) options.height = Number(args.height);
+    const shape = shapes.addImageFromBase64(b64, options);
+    shape.load("id,width,height");
+    await ctx.sync();
+    return {
+      ok: true,
+      shapeId: shape.id,
+      size: { width: round1(shape.width), height: round1(shape.height) },
+      note: "已插入为浮动图片；调整大小用 excel_resize_image。",
+    };
+  });
+};
+
+registry["excel.listImages"] = async (args) => {
+  return Excel.run(async (ctx) => {
+    const sheet = getSheet(ctx, args?.sheet);
+    const shapes = sheet.shapes;
+    shapes.load("items/id,name,type,left,top,width,height");
+    await ctx.sync();
+    const images = shapes.items
+      .filter((s) => String(s.type || "").toLowerCase() === "image")
+      .map((s) => ({
+        shapeId: s.id,
+        name: s.name,
+        left: round1(s.left),
+        top: round1(s.top),
+        width: round1(s.width),
+        height: round1(s.height),
+      }));
+    return {
+      sheet: sheet.name,
+      count: images.length,
+      images,
+      note: "调整大小用 excel_resize_image（shape_id 或 name 定位）。",
+    };
+  });
+};
+
+registry["excel.resizeImage"] = async (args) => {
+  if (args?.shape_id == null && !args?.name) throw new Error("必须提供 shape_id 或 name（来自 excel_list_images）");
+  const width = args?.width != null ? Number(args.width) : null;
+  const height = args?.height != null ? Number(args.height) : null;
+  const scale = args?.scale != null ? Number(args.scale) : null;
+  const checkSize = (nm, v) => {
+    if (!Number.isFinite(v) || v <= 0 || v > 10000) throw new Error(`${nm} 必须是 0~10000 的磅值`);
+  };
+  if (width != null) checkSize("width", width);
+  if (height != null) checkSize("height", height);
+  if (scale != null && (!Number.isFinite(scale) || scale <= 0 || scale > 20)) throw new Error("scale 必须是 0~20 的正数");
+  if (width == null && height == null && scale == null) throw new Error("至少提供 width / height / scale 之一");
+  return Excel.run(async (ctx) => {
+    const sheet = getSheet(ctx, args?.sheet);
+    const shapes = sheet.shapes;
+    shapes.load("items/id,name,type,width,height");
+    await ctx.sync();
+    let target;
+    if (args?.shape_id != null) {
+      target = shapes.items.find((s) => s.id === Number(args.shape_id));
+      if (!target) throw new Error(`未找到 id=${args.shape_id} 的形状（用 excel_list_images 查看）`);
+    } else {
+      const needle = String(args.name);
+      target = shapes.items.find((s) => String(s.name || "").includes(needle));
+      if (!target) throw new Error(`未找到名称包含「${needle}」的形状（用 excel_list_images 查看）`);
+    }
+    if (String(target.type || "").toLowerCase() !== "image") {
+      throw new Error(`目标不是图片（type=${target.type}），用 excel_list_images 重新定位图片`);
+    }
+    const oldW = Number(target.width);
+    const oldH = Number(target.height);
+    let newW = width;
+    let newH = height;
+    if (scale != null) {
+      newW = oldW * scale;
+      newH = oldH * scale;
+    }
+    if (newW != null && newH == null) newH = oldH * (newW / oldW);
+    if (newH != null && newW == null) newW = oldW * (newH / oldH);
+    target.width = newW;
+    target.height = newH;
+    await ctx.sync();
+    return {
+      ok: true,
+      shapeId: target.id,
+      oldSize: { width: round1(oldW), height: round1(oldH) },
+      newSize: { width: round1(newW), height: round1(newH) },
+    };
   });
 };
 

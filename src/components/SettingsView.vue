@@ -160,6 +160,10 @@ onMounted(async () => {
           <div class="label">工具结果截断长度（字符）</div>
           <el-input-number v-model="generalForm.maxToolResultChars" :min="500" :max="50000" :step="500" size="small" />
         </div>
+        <div class="field">
+          <div class="label">允许 AI 执行 Shell 命令（shell 工具：在本机运行命令行，关闭后 AI 不可见也不可执行）</div>
+          <el-switch v-model="generalForm.enableShell" active-text="开启" inactive-text="关闭" />
+        </div>
         <el-button type="primary" @click="saveGeneral">保存通用设置</el-button>
       </el-card>
 

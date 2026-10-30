@@ -30,8 +30,8 @@
     "sideload:status": "node scripts/sideload.mjs status",
     "validate": "office-addin-manifest validate manifest.xml",
     "package": "node scripts/package.mjs",
-    "installer": "node scripts/package.mjs && \"%LOCALAPPDATA%\\Programs\\Inno Setup 6\\ISCC.exe\" installer\\setup.iss",
-    "test": "node test/run-agent-test.mjs && node test/word-map-test.mjs && node test/thinking-persist-test.mjs && node test/attachment-test.mjs"
+    "installer": "node scripts/package.mjs && \"D:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe\" installer\\setup.iss",
+    "test": "node test/run-agent-test.mjs && node test/word-map-test.mjs && node test/thinking-persist-test.mjs && node test/attachment-test.mjs && node test/attachment-db-test.mjs && node test/memory-db-test.mjs && node test/image-process-test.mjs && node test/excel-write-json-test.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -42,6 +42,7 @@
     "element-plus": "^2.9.11",
     "express": "^4.21.2",
     "fflate": "^0.8.3",
+    "jimp": "^1.6.1",
     "markdown-it": "^14.1.0",
     "vue": "^3.5.13"
   },

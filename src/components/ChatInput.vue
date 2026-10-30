@@ -16,7 +16,7 @@ const docInput = ref(null);
 
 const supportsImages = computed(() => !!activeModel()?.supportsImages);
 
-const DOC_ACCEPT = ".docx,.dotx,.xlsx,.xlsm,.pptx,.txt,.md,.csv,.json,.log";
+const DOC_ACCEPT = ".docx,.dotx,.xlsx,.xlsm,.pptx,.txt,.md,.csv,.json,.log,.png,.jpg,.jpeg,.gif,.bmp,.webp";
 const MAX_FILE_MB = 15;
 const MAX_FILES = 5;
 
@@ -147,7 +147,7 @@ function downscale(dataUrl, max = 1280) {
         type="textarea"
         :autosize="{ minRows: 2, maxRows: 6 }"
         resize="none"
-        placeholder="描述你要做的操作，可附加文档（docx/xlsx/pptx/txt），Enter 发送"
+        placeholder="描述你要做的操作，可附加文档或图片（图片可插入当前文档），Enter 发送"
         :disabled="disabled"
         @keydown="onKeydown"
       />
@@ -161,7 +161,7 @@ function downscale(dataUrl, max = 1280) {
         >
           📷
         </el-button>
-        <el-button size="small" circle title="附加文档（AI 可读取内容与格式）" @click="pickDocs">📎</el-button>
+        <el-button size="small" circle title="附加文档或图片（图片可作为附件，AI 处理后插入文档）" @click="pickDocs">📎</el-button>
         <el-button v-if="disabled" size="small" type="danger" plain @click="emit('stop')">停止</el-button>
         <el-button v-else size="small" type="primary" @click="send">发送</el-button>
       </div>

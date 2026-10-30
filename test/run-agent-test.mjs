@@ -6,6 +6,8 @@
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage } from "@langchain/core/messages";
 import { runAgentTurn, historyToLcMessages } from "../server/agent.js";
+import { runShellCommand } from "../server/shell.js";
+import os from "node:os";
 
 /** 桩模型：按脚本依次返回响应（文本或 tool_calls） */
 class StubModel extends BaseChatModel {
@@ -155,6 +157,53 @@ console.log("\n[场景4] 系统提示词");
   const { buildSystemPrompt } = await import("../server/agent.js");
   const p = buildSystemPrompt("excel", { systemPrompt: "操作 {APP}" });
   check("{APP} 替换为 Excel", p.includes("Excel 工作簿"));
+}
+
+/* ---------- 场景 5：shell 工具（服务端直执行，不经任务窗格） ---------- */
+console.log("\n[场景5] shell 工具服务端直执行");
+{
+  const interrupts = [];
+  const messages = [];
+  await runAgentTurn({
+    turnId: "test-5",
+    historyRows: [{ role: "user", content: "帮我算个东西", toolCalls: [], images: [] }],
+    model: { model: "stub", supportsTools: true },
+    general: { systemPrompt: "测试", maxToolTurns: 10 },
+    appType: "word",
+    modelInstance: new StubModel([
+      {
+        tool_calls: [
+          { name: "shell", args: { command: "node -e \"console.log('中文输出- shell-ok-' + (6*7))\"" } },
+        ],
+      },
+      "命令已执行完毕。",
+    ]),
+    onMessage: (m) => messages.push(m),
+    onInterrupt: (tc) => interrupts.push(tc),
+    waitForResults: async () => [],
+    serverToolExecutor: (name, args) => runShellCommand(args),
+  });
+  check("shell 不产生任务窗格中断", interrupts.length === 0, JSON.stringify(interrupts));
+  const toolMsg = messages.find((m) => m.role === "tool" && m.name === "shell");
+  check("shell 结果回传且中文不乱码", toolMsg && toolMsg.content.includes("中文输出- shell-ok-42"), toolMsg?.content?.slice(0, 200));
+  check("退出码 0", /"exitCode":0/.test(toolMsg?.content || ""), toolMsg?.content?.slice(0, 200));
+}
+
+console.log("\n[场景6] shell 执行细节（退出码/超时/开关）");
+{
+  const r = await runShellCommand({ command: "node -e \"process.exit(3)\"" });
+  check("非零退出码透传", r.exitCode === 3, JSON.stringify(r));
+  check("结果含 cwd 且存在", typeof r.cwd === "string" && r.stdout !== undefined);
+
+  const t0 = Date.now();
+  const slow = await runShellCommand({ command: "Start-Sleep -Seconds 30", timeout_ms: 1500 }, { defaultCwd: os.tmpdir() });
+  check("超时终止进程树", slow.timedOut === true && slow.exitCode === null && Date.now() - t0 < 15000, JSON.stringify({ ...slow, stdout: slow.stdout.slice(0, 50) }));
+
+  const err = await runShellCommand({ command: "echo hi" }, { enabled: false }).catch((e) => e);
+  check("开关关闭时拒绝执行", err instanceof Error && err.message.includes("关闭"), String(err));
+
+  const badCwd = await runShellCommand({ command: "echo hi", cwd: "Z:\\__no_such_dir__" }).catch((e) => e);
+  check("工作目录不存在时报错", badCwd instanceof Error && badCwd.message.includes("工作目录"), String(badCwd));
 }
 
 console.log(failed ? "\n❌ 存在失败项" : "\n✅ 全部通过");

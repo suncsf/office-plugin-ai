@@ -29,6 +29,11 @@ export const api = {
   renameConversation: (id, title) => jfetch(`/api/conversations/${id}`, { method: "PATCH", body: { title } }),
   deleteConversation: (id) => jfetch(`/api/conversations/${id}`, { method: "DELETE" }),
 
+  listMemories: (host) => jfetch(`/api/memories${host && host !== "all" ? `?host=${host}` : ""}`),
+  createMemory: (memory) => jfetch("/api/memories", { method: "POST", body: memory }),
+  updateMemory: (id, memory) => jfetch(`/api/memories/${id}`, { method: "PATCH", body: memory }),
+  deleteMemory: (id) => jfetch(`/api/memories/${id}`, { method: "DELETE" }),
+
   resume: (turnId, results) => jfetch("/api/chat/resume", { method: "POST", body: { turnId, results } }),
 };
 

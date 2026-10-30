@@ -8,6 +8,7 @@
  * （Office 2024 / 新版 Microsoft 365 均满足），全部做了特性检测，不支持时返回明确的错误信息。
  */
 import { stripDataUrl } from "./dataurl";
+import { resolveImageSource, saveWorkspaceFile, imageExtFromBase64 } from "./bridge";
 
 /* ---------------- 内部工具函数 ---------------- */
 
@@ -343,9 +344,9 @@ registry["ppt.setShapeText"] = async (args) => {
   });
 };
 
-registry["ppt.insertImage"] = async (args) => {
-  const b64 = stripDataUrl(args?.base64);
-  if (!b64) throw new Error("base64 不能为空");
+registry["ppt.insertImage"] = async (args, ctxInfo) => {
+  const b64 = await resolveImageSource(args, ctxInfo);
+  if (!b64) throw new Error("base64 / file 至少提供一项");
   const index = args?.slide_index != null ? Number(args.slide_index) : null;
   if (index === null) throw new Error("请提供 slide_index");
   return PowerPoint.run(async (ctx) => {
@@ -364,6 +365,36 @@ registry["ppt.insertImage"] = async (args) => {
     shape.load("id");
     await ctx.sync();
     return { ok: true, slideIndex: index, shapeId: shape.id };
+  });
+};
+
+registry["ppt.getImage"] = async (args, ctxInfo) => {
+  requireSingleSelector(args);
+  return PowerPoint.run(async (ctx) => {
+    const { shapes, index } = await getSlideShapes(ctx, args?.slide_index);
+    const { list } = pickTargets(shapes, args);
+    const target = list[0];
+    if (String(target.type) !== "picture") {
+      throw new Error(`目标形状类型是 ${target.type}，不是图片（picture）。用 ppt_list_shapes 查看 type=picture 的形状`);
+    }
+    if (!hasFn(target, "getImageAsBase64")) {
+      throw new Error("当前 PowerPoint JS API 不支持导出图片内容（Shape.getImageAsBase64 需要 PowerPointApi 1.10+；Office 2024 永久版可能不支持，较新版 Microsoft 365 支持）");
+    }
+    const result = target.getImageAsBase64();
+    await ctx.sync();
+    const b64 = stripDataUrl(result?.value || "");
+    if (!b64) throw new Error("未能读取图片数据");
+    const ext = imageExtFromBase64(b64) || "png";
+    const rel = `images/ppt_shape${target.id}_${Date.now().toString(36)}.${ext}`;
+    const saved = await saveWorkspaceFile(ctxInfo?.conversationId, rel, b64);
+    return {
+      ok: true,
+      slideIndex: index,
+      shapeId: Number(target.id),
+      file: saved.file,
+      size: saved.size,
+      note: "已保存到对话工作区。可用 image_process 裁剪/缩放后，用 ppt_insert_image 的 file 参数插回页面；调尺寸/位置用 ppt_move_shape。",
+    };
   });
 };
 

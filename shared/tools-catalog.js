@@ -215,12 +215,50 @@ export const TOOLS = [
     name: "word_insert_image",
     host: "word",
     executor: "word.insertImage",
-    description: "在光标处插入图片（base64 编码，支持 dataURL）。width/height 单位为磅，可省略保持原始尺寸。",
+    description:
+      "在光标处插入图片。来源二选一：base64（base64/dataURL）或 file（对话工作区内图片文件的相对路径，如 images/xxx.png、attachments/xxx.png）。" +
+      "width/height 单位为磅，可省略保持原始尺寸。工作区文件来自：用户贴图（images/）、图片附件（attachments/）、word_get_image 提取的文档图片、image_process 的处理结果。",
     parameters: schema({
-      base64: str("图片 base64 或 dataURL"),
+      base64: str("图片 base64 或 dataURL（与 file 二选一）"),
+      file: str("工作区图片文件相对路径（与 base64 二选一）"),
       width: num("宽度（磅）"),
       height: num("高度（磅）"),
-    }, ["base64"]),
+    }),
+  },
+  {
+    name: "word_list_images",
+    host: "word",
+    executor: "word.listImages",
+    description:
+      "列出 Word 文档中的内嵌图片：index（按出现顺序，0 起始）、宽度、高度（磅）。" +
+      "调整大小用 word_resize_image；导出图片文件用 word_get_image。浮动/衬于文字下方的图片无法通过 JS API 访问，不在列表中。",
+    parameters: schema(),
+  },
+  {
+    name: "word_get_image",
+    host: "word",
+    executor: "word.getImage",
+    description:
+      "提取 Word 文档中第 index 张内嵌图片，保存为对话工作区文件（如 images/word_img1.png）并返回文件名。" +
+      "之后可用 image_process 裁剪/缩放，再用 word_insert_image 的 file 参数插回文档（实现「裁剪文档内图片」）。",
+    parameters: schema({
+      index: num("图片序号（0 起始，来自 word_list_images）"),
+    }, ["index"]),
+  },
+  {
+    name: "word_resize_image",
+    host: "word",
+    executor: "word.resizeImage",
+    description:
+      "调整 Word 内嵌图片的尺寸（磅）。target: index=按 word_list_images 的序号（默认，需给 index）；selection=调整当前选中/光标所在图片。" +
+      "width/height 至少一项，只给一边则等比缩放；scale 为等比缩放倍数（如 0.5 缩小一半），与 width/height 二选一。",
+    parameters: schema({
+      index: num("图片序号（0 起始，target=index 时必填）"),
+      target: str("目标", ["index", "selection"]),
+      width: num("新宽度（磅）"),
+      height: num("新高度（磅）"),
+      scale: num("等比缩放倍数（与 width/height 二选一）"),
+    }),
   },
   {
     name: "word_insert_table",
@@ -333,6 +371,157 @@ export const TOOLS = [
       paragraph_format: str("（可选）段落格式 JSON：{alignment, lineSpacing, spaceBefore, spaceAfter, leftIndent, rightIndent, firstLineIndent}（单位磅）"),
     }, ["name"]),
   },
+  /* ---------- Word 表格编辑 ---------- */
+  {
+    name: "word_get_tables",
+    host: "word",
+    executor: "word.getTables",
+    description:
+      "列出文档中的所有表格（按出现顺序编号，index 0 起始）：行列数、是否含合并单元格、首行内容预览。" +
+      "后续表格工具（读/写/增删行列/格式/合并）都用这个 table_index 定位表格；表格结构发生变化后请重新调用本工具。",
+    parameters: schema(),
+  },
+  {
+    name: "word_get_table",
+    host: "word",
+    executor: "word.getTable",
+    description:
+      "读取指定表格的完整内容（values 为二维数组，行优先，与 word_insert_table 的 data 格式一致）。" +
+      "需先用 word_get_tables 获取 index；含合并单元格的表（isUniform=false）行列可能不规整，请谨慎批量写入。",
+    parameters: schema({
+      table_index: num("表格 index（word_get_tables 返回的 0 起始编号）"),
+      max_rows: num("最多返回的行数，默认 100"),
+    }, ["table_index"]),
+  },
+  {
+    name: "word_set_table_cell",
+    host: "word",
+    executor: "word.setTableCell",
+    description:
+      "修改表格单个单元格的文本（只改文字，不影响格式；传空字符串清空该格）。" +
+      "修改多处内容建议改用 word_set_table_cells 批量写入。",
+    parameters: schema({
+      table_index: num("表格 index（0 起始）"),
+      row: num("行号（0 起始）"),
+      col: num("列号（0 起始）"),
+      text: str("要写入的文本"),
+    }, ["table_index", "row", "col", "text"]),
+  },
+  {
+    name: "word_set_table_cells",
+    host: "word",
+    executor: "word.setTableCells",
+    description:
+      "批量写入表格单元格：从 (start_row, start_col) 开始按二维数组逐格覆盖，只写 data 覆盖到的格子。" +
+      "写入区域超出表格范围会报错（不会自动扩表，扩行/扩列请用 word_add_table_row / word_add_table_column）。",
+    parameters: schema({
+      table_index: num("表格 index（0 起始）"),
+      start_row: num("起始行号（0 起始，默认 0）"),
+      start_col: num("起始列号（0 起始，默认 0）"),
+      data: arr("要写入的数据（二维数组，行优先，可只含要修改的区域）", arr("一行数据", str("单元格文本"))),
+    }, ["table_index", "data"]),
+  },
+  {
+    name: "word_add_table_row",
+    host: "word",
+    executor: "word.addTableRow",
+    description:
+      "在表格中插入行。at: top=表头上方插入，bottom=表尾追加（默认），above/below=在 row_index 指定行的上方/下方插入。" +
+      "data 为可选的一维数组（按列顺序填入新行，不足处补空）。返回新行的行号。",
+    parameters: schema({
+      table_index: num("表格 index（0 起始）"),
+      at: str("插入位置", ["top", "bottom", "above", "below"]),
+      row_index: num("at=above/below 时必填：参照行号（0 起始）"),
+      data: arr("新行内容（一维数组，按列顺序）", str("单元格文本")),
+    }, ["table_index"]),
+  },
+  {
+    name: "word_add_table_column",
+    host: "word",
+    executor: "word.addTableColumn",
+    description:
+      "在表格中插入列。at: left=最左侧插入，right=最右侧插入（默认），before/after=在 col_index 指定列的左/右侧插入。" +
+      "data 为可选的一维数组（按行顺序填入新列）。插列要求规整表格，含合并单元格的表可能失败。",
+    parameters: schema({
+      table_index: num("表格 index（0 起始）"),
+      at: str("插入位置", ["left", "right", "before", "after"]),
+      col_index: num("at=before/after 时必填：参照列号（0 起始）"),
+      data: arr("新列内容（一维数组，按行顺序）", str("单元格文本")),
+    }, ["table_index"]),
+  },
+  {
+    name: "word_delete_table_row",
+    host: "word",
+    executor: "word.deleteTableRow",
+    description:
+      "删除表格的指定行（从 row_index 起连续删 count 行，默认 1 行；不允许删光所有行）。" +
+      "破坏性操作，建议先用 word_get_table 确认内容，必要时 ask_user 确认。删除后行号会变化。",
+    parameters: schema({
+      table_index: num("表格 index（0 起始）"),
+      row_index: num("要删除的首行行号（0 起始）"),
+      count: num("删除的行数，默认 1"),
+    }, ["table_index", "row_index"]),
+  },
+  {
+    name: "word_delete_table_column",
+    host: "word",
+    executor: "word.deleteTableColumn",
+    description:
+      "删除表格的指定列（从 col_index 起连续删 count 列，默认 1 列；仅规整表格支持，不允许删光所有列）。" +
+      "破坏性操作，建议先确认。删除后列号会变化。",
+    parameters: schema({
+      table_index: num("表格 index（0 起始）"),
+      col_index: num("要删除的首列列号（0 起始）"),
+      count: num("删除的列数，默认 1"),
+    }, ["table_index", "col_index"]),
+  },
+  {
+    name: "word_delete_table",
+    host: "word",
+    executor: "word.deleteTable",
+    description:
+      "删除整个表格（含全部内容）。破坏性操作，执行前建议 ask_user 向用户确认。" +
+      "删除后其余表格的 index 会变化，请重新 word_get_tables。",
+    parameters: schema({ table_index: num("表格 index（0 起始）") }, ["table_index"]),
+  },
+  {
+    name: "word_set_table_format",
+    host: "word",
+    executor: "word.setTableFormat",
+    description:
+      "设置表格格式。默认作用于整表；给 row_index 作用于该行，给 col_index 作用于该列，两者同给作用于单个单元格。" +
+      "可选属性（仅传需要修改的）：style=表格样式名（仅整表，如 TableGrid / GridTable5Dark_Accent1 或文档自定义表样式）；" +
+      "horizontal_alignment=Left/Centered/Right/Justified（也接受 center/居中 等写法）；vertical_alignment=Top/Center/Bottom；" +
+      "shading_color=底纹 #RRGGBB（传 null 尝试清除）；bold=加粗；font_size=字号（磅）；font_color=字色 #RRGGBB。",
+    parameters: schema({
+      table_index: num("表格 index（0 起始）"),
+      row_index: num("（可选）限定到某行"),
+      col_index: num("（可选）限定到某列"),
+      style: str("表格样式名（仅整表设置）"),
+      horizontal_alignment: str("水平对齐", ["Left", "Centered", "Right", "Justified"]),
+      vertical_alignment: str("垂直对齐", ["Top", "Center", "Bottom"]),
+      shading_color: str("单元格底纹 #RRGGBB，传 null 清除"),
+      bold: bool("加粗"),
+      font_size: num("字号（磅）"),
+      font_color: str("字体颜色 #RRGGBB"),
+    }, ["table_index"]),
+  },
+  {
+    name: "word_merge_table_cells",
+    host: "word",
+    executor: "word.mergeTableCells",
+    description:
+      "合并表格中 (top_row, first_col) 到 (bottom_row, last_col) 矩形范围内的单元格。" +
+      "需要 WordApiDesktop 1.4（Office 2024/新版 365 桌面版），旧版本 Word 会报错。" +
+      "合并后表格结构变化，建议重新 word_get_table 确认。",
+    parameters: schema({
+      table_index: num("表格 index（0 起始）"),
+      top_row: num("范围首行行号（0 起始）"),
+      first_col: num("范围首列列号（0 起始）"),
+      bottom_row: num("范围末行行号（0 起始）"),
+      last_col: num("范围末列列号（0 起始）"),
+    }, ["table_index", "top_row", "first_col", "bottom_row", "last_col"]),
+  },
   {
     name: "word_run_code",
     host: "word",
@@ -424,12 +613,26 @@ export const TOOLS = [
     host: "excel",
     executor: "excel.setRangeValues",
     description:
-      "写入数据。values 可为：单值（填充整个区域）、一维数组（单行，行数需为 1）、二维数组（尺寸必须与区域一致，否则报错）。地址数量不符时会返回错误提示。",
+      "写入数据。values 可为：单值（填充整个区域）、一维数组（单行，行数需为 1）、二维数组（尺寸必须与区域一致，否则报错）；二维数组的 JSON 字符串形式会自动解析。地址数量不符时会返回错误提示。写结构化表格数据（对象数组/模拟数据）请改用 excel_write_json，无需计算地址与对齐尺寸。",
     parameters: schema({
       address: str("区域地址，如 A1:C3"),
-      values: str("要写入的值（标量/一维/二维数组）"),
+      values: str("要写入的值（标量/一维/二维数组，数组可传 JSON 字符串形式）"),
       sheet: str("工作表名，默认活动工作表"),
     }, ["address", "values"]),
+  },
+  {
+    name: "excel_write_json",
+    host: "excel",
+    executor: "excel.writeJson",
+    description:
+      "把 JSON 数据写成表格块（写模拟数据/结构化数据首选）：data 传对象数组（自动用键名生成表头行，如 [{\"日期\":\"2026-10-01\",\"产品\":\"笔记本电脑\",\"数量\":5}]）或二维数组（可配 headers 作表头）。从 start_cell（默认 A1）起自动计算区域尺寸，无需手工对齐地址；写完自动调整列宽。嵌套对象/数组会转为 JSON 字符串。返回写入地址与预览，可直接向用户汇报。",
+    parameters: schema({
+      data: arr("JSON 数据：对象数组（推荐，键名自动作表头）或二维数组"),
+      start_cell: str("起始单元格，默认 A1"),
+      headers: str("自定义表头：数组或逗号分隔字符串（对象数组用于指定列顺序；二维数组用于补表头行）"),
+      sheet: str("工作表名，默认活动工作表"),
+      auto_fit: bool("写完是否自动调整列宽，默认 true"),
+    }, ["data"]),
   },
   {
     name: "excel_set_formula",
@@ -575,6 +778,50 @@ export const TOOLS = [
     }, ["data_address"]),
   },
   {
+    name: "excel_insert_image",
+    host: "excel",
+    executor: "excel.insertImage",
+    description:
+      "在工作表插入浮动图片。来源二选一：base64（base64/dataURL）或 file（对话工作区内图片文件的相对路径）。" +
+      "位置：anchor=锚定单元格左上角（如 \"E2\"，默认 A1），或 left/top 磅坐标；width/height 磅（默认原图尺寸）。需要 ExcelApi 1.9+（Office 2021/2024 支持）。",
+    parameters: schema({
+      base64: str("图片 base64 或 dataURL（与 file 二选一）"),
+      file: str("工作区图片文件相对路径（与 base64 二选一）"),
+      anchor: str("图片左上角锚定的单元格地址，如 E2"),
+      left: num("左边距（磅，无 anchor 时使用，默认 20）"),
+      top: num("上边距（磅，无 anchor 时使用，默认 20）"),
+      width: num("宽度（磅）"),
+      height: num("高度（磅）"),
+      sheet: str("工作表名，默认活动工作表"),
+    }),
+  },
+  {
+    name: "excel_list_images",
+    host: "excel",
+    executor: "excel.listImages",
+    description:
+      "列出工作表上的浮动图片：shapeId、名称、位置与尺寸（磅）。调整大小用 excel_resize_image。",
+    parameters: schema({
+      sheet: str("工作表名，默认活动工作表"),
+    }),
+  },
+  {
+    name: "excel_resize_image",
+    host: "excel",
+    executor: "excel.resizeImage",
+    description:
+      "调整工作表上图片的尺寸（磅）：width/height 至少一项（只给一边则等比），或 scale 等比缩放倍数。" +
+      "用 shape_id 或 name 定位（来自 excel_list_images）。需要 ExcelApi 1.9+。",
+    parameters: schema({
+      shape_id: num("图片形状 id（来自 excel_list_images）"),
+      name: str("图片名称（包含匹配，取第一个）"),
+      width: num("新宽度（磅）"),
+      height: num("新高度（磅）"),
+      scale: num("等比缩放倍数（与 width/height 二选一）"),
+      sheet: str("工作表名，默认活动工作表"),
+    }),
+  },
+  {
     name: "excel_run_code",
     host: "excel",
     executor: "excel.runCode",
@@ -688,15 +935,31 @@ export const TOOLS = [
     name: "ppt_insert_image",
     host: "ppt",
     executor: "ppt.insertImage",
-    description: "在幻灯片上插入图片（base64/dataURL），可指定位置与尺寸（磅）。",
+    description:
+      "在幻灯片上插入图片。来源二选一：base64（base64/dataURL）或 file（对话工作区内图片文件的相对路径）。" +
+      "可指定位置与尺寸（磅）。工作区文件来自：用户贴图、图片附件、ppt_get_image 导出的形状图、image_process 处理结果。",
     parameters: schema({
       slide_index: num("幻灯片 index（0 起始）"),
-      base64: str("图片 base64 或 dataURL"),
+      base64: str("图片 base64 或 dataURL（与 file 二选一）"),
+      file: str("工作区图片文件相对路径（与 base64 二选一）"),
       left: num("左边距（磅），默认 60"),
       top: num("上边距（磅），默认 60"),
       width: num("宽度（磅）"),
       height: num("高度（磅）"),
-    }, ["base64"]),
+    }),
+  },
+  {
+    name: "ppt_get_image",
+    host: "ppt",
+    executor: "ppt.getImage",
+    description:
+      "把幻灯片上的图片形状导出为图片文件（保存到对话工作区并返回文件名）。之后可用 image_process 裁剪/缩放，再用 ppt_insert_image 的 file 参数插回（实现「裁剪页内图片」）。" +
+      "用 shape_id 或 match_text 定位（先 ppt_list_shapes 查看 type=picture 的形状）。需要 PowerPointApi 1.10+（较新 Microsoft 365 支持，Office 2024 可能不支持，不支持时会明确报错）。",
+    parameters: schema({
+      slide_index: num("幻灯片 index（0 起始）"),
+      shape_id: num("图片形状 id"),
+      match_text: str("匹配文本（包含即命中，取第一个）"),
+    }, ["slide_index"]),
   },
   {
     name: "ppt_insert_table",
@@ -934,6 +1197,105 @@ export const TOOLS = [
       limit: num("（可选）返回数量上限"),
       sheet: str("（可选）Excel 工作表名或序号（1 起）"),
     }, ["id"]),
+  },
+  {
+    name: "memory_save",
+    host: "common",
+    side: "server",
+    executor: "memory.save",
+    description:
+      "把可复用的知识存入用户长期记忆（跨对话持久，SQLite 存储）。适用场景：用户总结出的一套 Word 标准模板/排版规范、Excel 常用公式与函数写法、PPT 版式规范，或用户明确说「记住这个/以后都按这个来」时。" +
+      "host 按内容归属选择：word=Word 文档规范、excel=Excel 公式与表格规范、ppt=演示文稿规范、common=与具体应用无关的通用偏好；title 用一句话概括，content 写入完整细节（模板结构、公式原文、参数说明等）。" +
+      "保存前建议先用 memory_list 查看是否已有同类记忆，避免重复；保存成功后向用户简短确认记住了什么。用户没有要求记住时不要擅自保存。",
+    parameters: schema(
+      {
+        host: str("记忆分类", ["word", "excel", "ppt", "common"]),
+        title: str("记忆标题（一句话概括，如「公司公文标准模板」）"),
+        content: str("记忆内容（完整细节：模板结构、样式参数、公式原文、使用步骤等）"),
+      },
+      ["host", "title", "content"]
+    ),
+  },
+  {
+    name: "memory_list",
+    host: "common",
+    side: "server",
+    executor: "memory.list",
+    description:
+      "查看用户长期记忆列表（跨对话持久）。host 缺省返回全部分类，可按 word/excel/ppt/common 过滤，keyword 按标题模糊搜索。" +
+      "当用户提到「按之前的标准/模板/公式」或你要复用已保存的规范时，先用本工具查看记忆内容。",
+    parameters: schema({
+      host: str("（可选）按分类过滤", ["word", "excel", "ppt", "common"]),
+      keyword: str("（可选）按标题模糊搜索的关键词"),
+    }),
+  },
+  {
+    name: "memory_update",
+    host: "common",
+    side: "server",
+    executor: "memory.update",
+    description:
+      "更新一条已有长期记忆的标题或内容（按 id 定位）。当用户要求修改/补充之前记住的内容，或你发现某条记忆已过时需要修正时使用；只需传要修改的字段。",
+    parameters: schema({
+      id: str("记忆 id（来自 memory_list）"),
+      title: str("（可选）新的标题"),
+      content: str("（可选）新的内容（整体替换，不是追加）"),
+    }, ["id"]),
+  },
+  {
+    name: "memory_delete",
+    host: "common",
+    side: "server",
+    executor: "memory.delete",
+    description: "删除一条长期记忆（按 id 定位）。当用户明确要求忘记/删除某条记忆时使用；删除前建议向用户确认。",
+    parameters: schema({ id: str("记忆 id（来自 memory_list）") }, ["id"]),
+  },
+  {
+    name: "shell",
+    host: "common",
+    side: "server",
+    executor: "shell.run",
+    description:
+      "在本机（AI 服务所在的这台 Windows 电脑）执行 shell 命令并返回 stdout/stderr/退出码。" +
+      "默认用 PowerShell，shell=cmd 改用命令提示符；cwd 指定工作目录（默认当前对话的工作区目录），timeout_ms 默认 60000、上限 600000。" +
+      "用途：批量处理文件、调用本机程序（python/ffmpeg/git 等）、查询系统信息、生成或转换文件等 Office 工具覆盖不到的场景。" +
+      "注意：命令真实作用于用户电脑，删除文件、修改系统等破坏性操作前必须先用 ask_user 向用户确认；" +
+      "交互式/全屏程序（vim、top）不可用，长驻命令会一直运行到超时；输出统一按 UTF-8 解码，个别老旧中文程序输出可能乱码。可在设置中关闭本工具。",
+    parameters: schema({
+      command: str("要执行的命令"),
+      shell: str("解释器", ["powershell", "cmd"]),
+      cwd: str("（可选）工作目录，默认当前对话的工作区目录"),
+      timeout_ms: num("（可选）超时毫秒，默认 60000，上限 600000"),
+    }, ["command"]),
+  },
+  {
+    name: "image_process",
+    host: "common",
+    side: "server",
+    executor: "image.process",
+    description:
+      "处理对话工作区内的图片文件并输出为新文件（不覆盖原图）：resize（缩放，等比）、crop（裁剪）、rotate（顺时针旋转）、flip（翻转）、format（转格式 png/jpeg/bmp/gif/tiff）、quality（jpeg 压缩 1~100）。" +
+      "file 为工作区相对路径（如 images/user_xx.png、attachments/att_xx.png、word_get_image 的导出文件）；output 可指定输出文件名。" +
+      "crop 默认像素坐标（相对处理前图片），crop_unit=ratio 时为 0~1 比例。" +
+      "典型流程：word_get_image/ppt_get_image 导出文档内图片 → image_process 裁剪 → 插入图片工具的 file 参数插回；或处理用户贴图/图片附件后插入。" +
+      "注意：webp 输入不支持处理；处理后文件大小/尺寸会随结果返回。",
+    parameters: schema({
+      file: str("工作区内图片文件的相对路径"),
+      resize_width: num("缩放目标宽（px），只给宽则等比"),
+      resize_height: num("缩放目标高（px），只给高则等比"),
+      resize_scale: num("等比缩放倍数 0.1~10（与宽/高二选一）"),
+      crop_x: num("裁剪起点 x（px 或 0~1 比例）"),
+      crop_y: num("裁剪起点 y"),
+      crop_w: num("裁剪宽度"),
+      crop_h: num("裁剪高度"),
+      crop_unit: str("裁剪坐标单位", ["px", "ratio"]),
+      rotate: num("顺时针旋转角度（度，如 90）"),
+      flip_h: bool("水平翻转"),
+      flip_v: bool("垂直翻转"),
+      format: str("输出格式", ["png", "jpeg", "bmp", "gif", "tiff"]),
+      quality: num("jpeg 压缩质量 1~100（默认 85）"),
+      output: str("输出文件名（工作区相对路径，默认自动命名）"),
+    }, ["file"]),
   },
 
 ];

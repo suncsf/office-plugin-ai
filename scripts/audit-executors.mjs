@@ -1,10 +1,8 @@
-/** 列出目录工具 → 执行器位置与函数体长度（找 stub/缺失实现） */
+/** 列出目录工具 → 执行器位置与函数体长度（找 stub/缺失实现；side:"server" 的工具在服务端直执行，跳过） */
 import fs from "node:fs";
+import { TOOLS, SERVER_TOOLS } from "../shared/tools-catalog.js";
 
-const cat = fs.readFileSync("shared/tools-catalog.js", "utf8");
-const tools = [...cat.matchAll(/\{\s*name:\s*"([^"]+)"[\s\S]*?executor:\s*"([^"]+)"/g)].map(
-  (m) => ({ name: m[1], executor: m[2] })
-);
+const tools = TOOLS.filter((t) => !SERVER_TOOLS.has(t.name));
 const files = ["src/office/word.js", "src/office/excel.js", "src/office/ppt.js", "src/office/index.js"];
 const reg = new Map();
 for (const f of files) {
@@ -20,6 +18,7 @@ for (const f of files) {
   }
 }
 for (const t of tools) {
+  if (t.executor === "common.askUser") continue; // ask_user 由任务窗格表单 UI 拦截，无 registry 实现
   const r = reg.get(t.executor);
   const flag = !r ? "❌缺失" : r.bodyLen < 220 ? "⚠️短" : "  ";
   console.log(`${flag} ${t.name.padEnd(28)} ${r ? r.file + ":" + r.lineNo + " (" + Math.round(r.bodyLen / 1000) + "K chars)" : "无实现"}`);

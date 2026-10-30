@@ -33,11 +33,38 @@ export const APP_TYPE_NAMES = {
 
 /* ---------------- 提示词 ---------------- */
 
-export function buildSystemPrompt(appType, general) {
+export function buildSystemPrompt(appType, general, memories = []) {
   const now = new Date().toLocaleString("zh-CN", { hour12: false });
-  return String(general.systemPrompt || "")
+  const base = String(general.systemPrompt || "")
     .replaceAll("{APP}", APP_TYPE_NAMES[appType] || APP_TYPE_NAMES.unknown)
     + `\n当前应用类型: ${appType}${appType === "unknown" ? "（未知，请先调用 get_office_context 确认）" : ""}\n当前时间: ${now}`;
+  return base + buildMemoryPrompt(memories);
+}
+
+/**
+ * 长期记忆 → 系统提示词附加块
+ * 每条内容最多截取 1500 字符、整体最多 12000 字符，防止记忆过多撑爆上下文；
+ * 超出部分提示模型用 memory_list / memory_read 工具按需查询。
+ */
+export function buildMemoryPrompt(memories) {
+  if (!Array.isArray(memories) || !memories.length) return "";
+  const HOST_TAGS = { word: "Word", excel: "Excel", ppt: "PPT", common: "通用" };
+  let total = 0;
+  const lines = [];
+  for (const m of memories) {
+    if (!m || !m.title || !m.content) continue;
+    if (total >= 12000) break;
+    let content = String(m.content);
+    if (content.length > 1500) content = content.slice(0, 1500) + "…[内容过长已截断，可用 memory_list 查询完整内容]";
+    total += content.length + m.title.length + 20;
+    lines.push(`【${HOST_TAGS[m.host] || m.host}】${m.title}\n${content}`);
+  }
+  if (!lines.length) return "";
+  return (
+    `\n\n[用户长期记忆] 以下是用户之前让你记住的内容（跨对话持久），与当前任务相关时直接遵循，不必再询问：\n`
+    + lines.join("\n---\n")
+    + `\n管理方式：memory_list 查看 / memory_save 保存 / memory_update 更新 / memory_delete 删除。`
+  );
 }
 
 /* ---------------- 工具绑定 ---------------- */
@@ -196,18 +223,23 @@ export function historyToLcMessages(rows, { supportsImages }) {
       const attNote = atts.length
         ? `\n\n[本条消息带有附件：${atts.map((a, i) => `${i + 1}. ${a.name}（id=${a.id}）`).join("；")}。用 attachment_list 查看概览，attachment_read 读取内容与格式]`
         : "";
+      // 贴图落盘标注：图片已存入工作区，可直接用 file 参数插入文档
+      const imgFiles = Array.isArray(r.meta?.imageFiles) ? r.meta.imageFiles : [];
+      const imgNote = imgFiles.length
+        ? `\n\n[本条消息的图片已存入对话工作区：${imgFiles.map((f, i) => `${i + 1}. ${f.file}`).join("；")}。需要把图片插入文档时，把它作为插入图片工具的 file 参数；也可先用 image_process 裁剪/缩放]`
+        : "";
       const imgs = supportsImages ? r.images || [] : [];
       if (imgs.length) {
         out.push(
           new HumanMessage({
             content: [
-              { type: "text", text: (r.content || "（见图片）") + attNote },
+              { type: "text", text: (r.content || "（见图片）") + attNote + imgNote },
               ...imgs.map((url) => ({ type: "image_url", image_url: { url } })),
             ],
           })
         );
       } else {
-        out.push(new HumanMessage((r.content || "") + attNote));
+        out.push(new HumanMessage((r.content || "") + attNote + imgNote));
       }
     } else if (r.role === "assistant") {
       if (r.meta?.error) continue; // 错误占位消息不回传给模型
@@ -339,6 +371,7 @@ export function buildGraph({ model, tools, systemPrompt, signal, onThinkingDelta
  *  model           模型配置
  *  general         通用设置
  *  appType         word | excel | ppt | unknown
+ *  memories        注入系统提示词的长期记忆（[{host,title,content}]，可省略）
  *  signal          AbortSignal（用户停止/断开时中断 LLM 调用）
  *  onDelta(kind, text)     token 流：kind = "content" | "thinking"
  *  onMessage(clientMsg)    一条完整消息产生（assistant / tool），由 HTTP 层持久化并推送
@@ -349,12 +382,13 @@ export function buildGraph({ model, tools, systemPrompt, signal, onThinkingDelta
 export async function runAgentTurn(opts) {
   const {
     turnId, historyRows, model, general, appType, signal, excludeToolNames = null,
+    memories = [],
     onDelta = () => {}, onMessage = () => {}, onInterrupt = () => {},
     waitForResults = async () => [], onUsage = () => {}, serverToolExecutor = null,
   } = opts;
 
   const tools = model.supportsTools === false ? [] : toolsForHost(appType, excludeToolNames);
-  const systemPrompt = buildSystemPrompt(appType, general);
+  const systemPrompt = buildSystemPrompt(appType, general, memories);
   const baseMessages = historyToLcMessages(historyRows, { supportsImages: model.supportsImages !== false });
   const chatModel = opts.modelInstance || createChatModel(model, general);
   const graph = buildGraph({

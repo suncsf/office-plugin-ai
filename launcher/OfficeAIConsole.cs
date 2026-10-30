@@ -1,5 +1,5 @@
 // AI 助手 · 控制台（WinForms，.NET Framework 4.x，C#5 兼容）
-// 职责：启动/停止服务、安装证书、注册旁加载、启动 Office、开机自启、日志展示
+// 职责：启动/停止服务、安装证书、注册旁加载、启动 Office、开机自启、日志展示；最小化隐藏到系统托盘（不占任务栏）
 // 编译：csc /target:winexe /r:System.Windows.Forms.dll /r:System.Drawing.dll OfficeAIConsole.cs
 using System;
 using System.Diagnostics;
@@ -18,6 +18,7 @@ namespace OfficeAI
         const string SideloadKey = @"SOFTWARE\Microsoft\Office\16.0\Wef\Developer";
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunValueName = "OfficeAI助手";
+        internal const string RestoreEventName = "OfficeAI-Console-Restore";
 
         readonly string baseDir = AppDomain.CurrentDomain.BaseDirectory;
         readonly string nodeExe;
@@ -32,6 +33,10 @@ namespace OfficeAI
         CheckBox chkAutoStart;
         TextBox txtLog;
         System.Windows.Forms.Timer timer;
+        NotifyIcon tray;
+        ContextMenuStrip trayMenu;
+        System.Threading.EventWaitHandle restoreEvent;
+        bool trayHintShown;
 
         public MainForm(bool startMinimized)
         {
@@ -93,10 +98,51 @@ namespace OfficeAI
             txtLog.Size = new Size(532, 148);
             Controls.Add(txtLog);
 
+            restoreEvent = CreateRestoreEvent();
+
             timer = new System.Windows.Forms.Timer();
             timer.Interval = 2000;
-            timer.Tick += delegate { UpdateStatus(); };
+            timer.Tick += delegate
+            {
+                try
+                {
+                    if (restoreEvent != null && restoreEvent.WaitOne(TimeSpan.Zero))
+                        ShowFromTray(); // 第二实例请求唤起
+                }
+                catch { }
+                UpdateStatus();
+            };
             timer.Start();
+
+            /* ---------------- 托盘：最小化即隐藏，任务栏不留按钮 ---------------- */
+            trayMenu = new ContextMenuStrip();
+            trayMenu.Items.Add("🖥 打开界面", null, delegate { ShowFromTray(); });
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add("📘 启动 Word", null, delegate { LaunchOffice("WINWORD.EXE"); });
+            trayMenu.Items.Add("📗 启动 Excel", null, delegate { LaunchOffice("EXCEL.EXE"); });
+            trayMenu.Items.Add("📙 启动 PPT", null, delegate { LaunchOffice("POWERPNT.EXE"); });
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add("✖ 关闭", null, delegate { Close(); });
+            tray = new NotifyIcon();
+            tray.Text = "AI 助手控制台";
+            tray.Icon = GetAppIcon();
+            tray.ContextMenuStrip = trayMenu;
+            tray.Click += delegate { ShowFromTray(); };
+            tray.Visible = true;
+            Resize += delegate
+            {
+                if (WindowState == FormWindowState.Minimized)
+                {
+                    Hide();
+                    if (!trayHintShown)
+                    {
+                        trayHintShown = true;
+                        tray.BalloonTipTitle = "AI 助手";
+                        tray.BalloonTipText = "已最小化到系统托盘，点击托盘图标恢复窗口";
+                        try { tray.ShowBalloonTip(3000); } catch { }
+                    }
+                }
+            };
 
             Load += delegate
             {
@@ -114,6 +160,11 @@ namespace OfficeAI
                     { e.Cancel = true; return; }
                 }
                 StopServer();
+                if (tray != null)
+                {
+                    tray.Visible = false; // 退出前移除托盘图标
+                    tray.Dispose();
+                }
             };
         }
 
@@ -191,6 +242,32 @@ namespace OfficeAI
             bool running = serverProc != null && !serverProc.HasExited;
             lblStatus.Text = running ? "状态：● 服务运行中（https://localhost:3000）" : "状态：○ 服务未运行";
             lblStatus.ForeColor = running ? Color.FromArgb(22, 140, 70) : Color.Firebrick;
+        }
+
+        /* ---------------- 托盘 ---------------- */
+        void ShowFromTray()
+        {
+            Show();
+            WindowState = FormWindowState.Normal;
+            TopMost = true;  // 确保从托盘唤起时置前可见
+            TopMost = false;
+            Activate();
+        }
+
+        Icon GetAppIcon()
+        {
+            try { return Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+            catch { return SystemIcons.Application; }
+        }
+
+        System.Threading.EventWaitHandle CreateRestoreEvent()
+        {
+            try
+            {
+                return new System.Threading.EventWaitHandle(
+                    false, System.Threading.EventResetMode.AutoReset, RestoreEventName);
+            }
+            catch { return null; }
         }
 
         /* ---------------- 证书 ---------------- */
@@ -386,7 +463,18 @@ namespace OfficeAI
         {
             bool created;
             System.Threading.Mutex mutex = new System.Threading.Mutex(true, "OfficeAI-Console-SingleInstance", out created);
-            if (!created) { MessageBox.Show("控制台已在运行中"); return; }
+            if (!created)
+            {
+                // 已在运行（可能正隐藏于托盘）：通知其唤起窗口，而非弹框
+                try
+                {
+                    using (System.Threading.EventWaitHandle ev =
+                        System.Threading.EventWaitHandle.OpenExisting(MainForm.RestoreEventName))
+                        ev.Set();
+                }
+                catch { }
+                return;
+            }
             bool minimized = args != null && Array.IndexOf(args, "--min") >= 0;
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);

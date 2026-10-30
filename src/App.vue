@@ -4,6 +4,7 @@ import { store, activeModel } from "./store";
 import { HOST_LABELS } from "./defaults";
 import ChatView from "./components/ChatView.vue";
 import HistoryView from "./components/HistoryView.vue";
+import MemoryView from "./components/MemoryView.vue";
 import SettingsView from "./components/SettingsView.vue";
 import AboutView from "./components/AboutView.vue";
 
@@ -49,6 +50,9 @@ const modelOk = computed(() => store.settings.models.length > 0);
         </el-tab-pane>
         <el-tab-pane label="历史" name="history">
           <HistoryView />
+        </el-tab-pane>
+        <el-tab-pane label="记忆" name="memory">
+          <MemoryView />
         </el-tab-pane>
         <el-tab-pane label="设置" name="settings">
           <SettingsView />
