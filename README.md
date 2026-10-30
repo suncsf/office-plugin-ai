@@ -1,11 +1,16 @@
-# Office AI 助手（Office 2024 加载项）
+# Office AI 助手（Office 加载项：2024 / 365 / 2019）
 
-> **开发人员**：suncsf · **GitHub**：https://github.com/suncsf
-> 📦 完整开发归档（架构/决策/修复史/验证）：[docs/ARCHIVE-2026-10-29.md](docs/ARCHIVE-2026-10-29.md)
+> **开发人员**：见本地配置（`about-info.local.js`，隐私信息不入库）
+> 📦 完整开发归档（架构/决策/修复史/验证）：[docs/ARCHIVE-2026-10-29.md](docs/ARCHIVE-2026-10-29.md) ·
+> 增量归档（Office 2019 IE11 兼容版）：[docs/ARCHIVE-2026-10-30.md](docs/ARCHIVE-2026-10-30.md)
 
-一个面向 **Office 2024 / Microsoft 365（Word · Excel · PowerPoint）** 的任务窗格加载项：
+一个面向 **Office 2024 / Microsoft 365 / Office 2019（Word · Excel · PowerPoint）** 的任务窗格加载项：
 内嵌 **AI Agent 面板（LangGraph.js）**，把 Office 的文档能力封装成 **84 个工具**开放给大模型，
 让你用自然语言直接查看和修改当前打开的文档。
+
+> **Office 2019 兼容**：2019 永久版的任务窗格 WebView 锁定 IE11（无法运行 Vue3），项目内置一套
+> **IE11 兼容版前端**（`src-legacy/`，Vue2 + Element UI，构建产物纯 ES5），服务端按浏览器内核
+> 自动分流——2019 与新版 Office 共用同一 manifest 与后端，无需分别安装。
 
 ![stack](https://img.shields.io/badge/LangGraph.js-Agent-blue) ![ui](https://img.shields.io/badge/Vue3-Element%20Plus-green) ![db](https://img.shields.io/badge/SQLite-持久化-lightgrey)
 
@@ -56,7 +61,8 @@ LangGraph 的 `tools` 节点通过 `interrupt()` 暂停图执行，把工具调�
 
 ## 🚀 快速开始
 
-> 要求：**Node.js ≥ 18.17（推荐 20/22 LTS）**、Windows 上的 Office 2024 或 Microsoft 365
+> 要求：**Node.js ≥ 18.17（推荐 20/22 LTS）**、Windows 上的 Office 2019 / 2021 / 2024 或 Microsoft 365
+> （Office 2019 自动使用 IE11 兼容版界面，功能见下方「已知限制」）
 
 ```bash
 # 1. 安装依赖
@@ -99,7 +105,7 @@ npm run sideload -- excel   # 指定 Excel
 
 ---
 
-## 📦 打包安装程序（Win10+ / Office 2021+）
+## 📦 打包安装程序（Win10+ / Office 2019+）
 
 ```bash
 npm run package     # 组装 staging：应用文件 + 生产依赖 + 内置 Node + 编译控制台
@@ -174,6 +180,12 @@ office-plugin-ai/
 **工具调用失败**
 - 任务窗格右上角会显示当前宿主；跨应用工具会被拒绝（例如在 Excel 里调用 Word 工具）。
 - PPT 的形状级操作（删除/移动/格式化单个形状）需要 PowerPointApi 1.3+/1.4+，文本框、图片、表格添加需要 PowerPointApi 1.8+（Office 2024 与新版 365 均支持）；旧版本会返回明确错误。
+
+**Office 2019（IE11 兼容版）能力差异**
+- Office 2019 任务窗格运行在 IE11 内核，前端自动切换为兼容版（Vue2 + Element UI），界面与新版略有差异、无热更新。
+- `word_run_code` / `excel_run_code` / `ppt_run_code`（AI 直接执行代码）在 IE11 下**不可用**（依赖 async/await 语言特性，服务端已自动对兼容版隐藏这三个工具，其余工具不受影响）。
+- PPT 工具集本身要求 PowerPointApi 1.8+，而 Office 2019 的 PowerPointApi 上限为 1.1，因此 PPT 工具在 2019 下基本不可用；Word/Excel 的基础读写工具可用（Word API 上限 1.3、Excel API 上限 1.7）。
+- 更完整的体验建议 Office 2021 / 2024 / Microsoft 365（WebView2）。
 
 **模型不支持工具**
 - 在模型设置里关闭「允许调用工具」即可作为纯对话模型使用；工具类请求请切换到支持 Function Calling 的模型。
